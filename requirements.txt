@@ -9,8 +9,9 @@ textblob==0.18.0
 nltk==3.8.1
 
 # Vector DB + embeddings — local, no cloud, no cost
-chromadb==0.5.3
-sentence-transformers==3.0.1
+# REMOVED in v3 (LLM Wiki replaces RAG):
+# chromadb==0.5.3
+# sentence-transformers==3.0.1
 
 # LLM — Gemini free tier only
 google-generativeai==0.7.2

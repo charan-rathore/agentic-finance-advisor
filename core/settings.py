@@ -24,7 +24,9 @@ class Settings:
     # ── Storage ───────────────────────────────────────────────────────────────
     # SQLite: a single file, no server needed. Perfect for personal projects.
     SQLITE_PATH: str = os.getenv("SQLITE_PATH", "./data/finance.db")
-    CHROMA_PERSIST_DIR: str = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
+    WIKI_DIR: str = os.getenv("WIKI_DIR", "./data/wiki")
+    WIKI_INGEST_EVERY_N_ARTICLES: int = int(os.getenv("WIKI_INGEST_EVERY_N_ARTICLES", "5"))
+    WIKI_LINT_INTERVAL_HOURS: float = float(os.getenv("WIKI_LINT_INTERVAL_HOURS", "6"))
 
     # ── Data sources (all free, no API key required) ──────────────────────────
     YFINANCE_SYMBOLS: list[str] = [
