@@ -1,4 +1,9 @@
-"""Alembic migration environment."""
+"""
+Alembic migration environment (legacy).
+
+v2 creates SQLite tables via core.models.init_db() at runtime. Revision files under
+alembic/versions/ target the old PostgreSQL schema and are not aligned with v2.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from core.config import get_settings
-from db.base import Base
-from db.models import transaction, user_profile  # noqa: F401 — register models
+from core.models import Base
+from core.settings import settings
 
 config = context.config
 if config.config_file_name is not None:
@@ -19,7 +23,7 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    return str(get_settings().database_url)
+    return settings.DATABASE_URL
 
 
 def run_migrations_offline() -> None:

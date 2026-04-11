@@ -1,7 +1,5 @@
-"""Declarative base for SQLAlchemy models."""
+"""Legacy shim — declarative Base is defined in core.models (v2 SQLite schema)."""
 
-from sqlalchemy.orm import DeclarativeBase
+from core.models import Base
 
-
-class Base(DeclarativeBase):
-    """Base class for all ORM models."""
+__all__ = ["Base"]

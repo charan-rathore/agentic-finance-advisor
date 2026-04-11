@@ -1,55 +1,33 @@
 """
-FastAPI application entrypoint.
+FastAPI legacy stub.
 
-Run locally: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+v2 runs agents via `python main.py` and the dashboard via `streamlit run ui/app.py`.
+Optional: `uvicorn app.main:app` exposes /api/v1/health for simple checks.
 """
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from agents.messaging import AgentEventPublisher, get_event_publisher
-from api.routes import health, transactions
-from core.config import get_settings
-from core.logging_config import configure_logging
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown hooks (DB pools, Kafka consumers, etc.)."""
-    configure_logging(json_logs=get_settings().is_production)
-    publisher: AgentEventPublisher = get_event_publisher()
-    await publisher.start()
-    try:
-        yield
-    finally:
-        await publisher.stop()
+from fastapi import APIRouter, FastAPI
 
 
 def create_app() -> FastAPI:
-    """Application factory for tests and ASGI servers."""
-    settings = get_settings()
+    """Minimal ASGI app so older smoke tests and tooling keep a stable entrypoint."""
     application = FastAPI(
-        title=settings.app_name.replace("-", " ").title(),
-        version="0.1.0",
-        lifespan=lifespan,
+        title="Finance Advisor",
+        version="0.2.0",
+        description="Legacy HTTP stub; v2 multi-agent stack uses root main.py.",
     )
-    origins = settings.cors_allow_origins
-    # Browsers reject `credentials` with wildcard origins.
-    allow_credentials = "*" not in origins
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=allow_credentials,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    application.include_router(health.router, prefix=settings.api_prefix)
-    application.include_router(transactions.router, prefix=settings.api_prefix)
+    api = APIRouter(prefix="/api/v1")
+
+    @api.get("/health")
+    def health() -> dict[str, str]:
+        return {"message": "ok"}
+
+    @api.get("/ready")
+    def ready() -> dict[str, str]:
+        return {"message": "ready"}
+
+    application.include_router(api)
     return application
 
 

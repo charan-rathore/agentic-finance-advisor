@@ -1,130 +1,113 @@
-# Multi-agent AI personal finance advisor
+# Multi-Agent AI Personal Finance Advisor
 
-Production-oriented skeleton for a **multi-agent** platform: budgeting, expense analysis, savings heuristics, investment education, fraud-style alerts, news sentiment hooks, RAG-backed explanations, CSV uploads, PostgreSQL persistence, Kafka events, Redis (cache/pub-sub ready), ChromaDB vectors, **Gemini** via Google AI Studio, **FastAPI** backend, and **Streamlit** dashboard.
+> A personal project demonstrating multi-agent AI architecture, RAG, LLM integration,
+> and containerized deployment — built entirely with free, open-source tools.
 
-## Layout
+## What It Does
 
-| Path | Role |
-|------|------|
-| `app/` | FastAPI application factory and ASGI entry |
-| `api/` | Routers, dependencies, request/response schemas |
-| `agents/` | Agent base types, orchestrator, Kafka publisher |
-| `core/` | Settings (`pydantic-settings`), logging, Gemini helper |
-| `db/` | SQLAlchemy models and session |
-| `rag/` | ChromaDB vector helpers |
-| `services/` | CSV ingestion and other app services |
-| `frontend/` | Streamlit UI |
-| `scripts/` | Dev utilities (e.g. Kafka debug consumer) |
-| `tests/` | Pytest suite |
-| `alembic/` | Database migrations |
-| `data/raw`, `data/processed` | Local file drops (gitignored contents) |
+Monitors stock prices and financial news in real time, analyzes market sentiment,
+retrieves relevant context from a local knowledge base, and generates personalized
+investment insights using Google Gemini — all automatically, on a schedule.
 
-## Prerequisites
+## Architecture
 
-- Python **3.9+** locally (Dockerfile uses **3.12**)
-- Docker Desktop (or compatible engine) for compose stack
-- [Google AI Studio](https://aistudio.google.com/) API key (optional for stubs)
+Three specialized agents communicate via async message queues:
 
-## Quick start (local Python)
+```
+Ingest Agent  →  [raw_market_queue]  →  Analysis Agent  →  [insights_queue]  →  Storage Agent
+              →  [raw_news_queue]   →                                         →  Streamlit UI
+```
+
+| Agent | Responsibility |
+| --- | --- |
+| **Ingest Agent** | Fetches stock prices (yfinance) and news (RSS/feedparser) on a schedule |
+| **Analysis Agent** | Sentiment analysis (TextBlob) + RAG retrieval (ChromaDB) + Gemini LLM |
+| **Storage Agent** | Persists insights to SQLite; serves data to the UI |
+
+## Tech Stack
+
+| Layer | Tool | Why |
+| --- | --- | --- |
+| Agent orchestration | Python `asyncio` | Event-driven, concurrent, zero infrastructure |
+| LLM | Google Gemini 1.5 Flash | Free tier, 1M tokens/day |
+| Vector search | ChromaDB + sentence-transformers | Local RAG, no cloud cost |
+| Embeddings | `all-MiniLM-L6-v2` | Free HuggingFace model, runs offline |
+| Sentiment | TextBlob | Free, offline NLP |
+| Market data | yfinance | Free Yahoo Finance wrapper |
+| News | feedparser (RSS) | Free, no API key |
+| Database | SQLite + SQLAlchemy | Zero-config, file-based |
+| UI | Streamlit | Free, Python-native dashboard |
+| Deployment | Docker + docker-compose | Fully containerized |
+
+**Total cost to run: $0.00**
+
+## Quick Start
+
+### Prerequisites
+
+- Docker + docker-compose installed
+- Free Gemini API key from https://aistudio.google.com/ (no credit card needed)
+
+### Run
 
 ```bash
-cd /path/to/starter-project
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+git clone https://github.com/YOUR_USERNAME/multi-agent-finance
+cd multi-agent-finance
+cp .env.example .env
+# Edit .env: paste your GEMINI_API_KEY
+docker-compose up --build
+```
+
+Open **http://localhost:8501** for the dashboard.
+
+First insights appear after ~10 minutes (one full ingest + analysis cycle).
+
+### Run locally (no Docker)
+
+```bash
+python3 -m venv .venv && source .venv/activate
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env — set GEMINI_API_KEY if you use Gemini
+python -m textblob.download_corpora
+python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
+cp .env.example .env  # add your Gemini key
+python main.py        # agents in terminal
+# separate terminal:
+streamlit run ui/app.py
 ```
 
-Start infrastructure (Postgres, Redis, Kafka, Chroma) — from the same directory:
+## Project Structure
 
-```bash
-docker compose up -d postgres redis zookeeper kafka chroma
+```
+agents/          # The 3 specialized agents
+core/            # Shared config, DB models, message queues
+ui/              # Streamlit dashboard
+tests/           # Unit tests
+main.py          # Entry point (starts all agents)
+docker-compose.yml
 ```
 
-Run migrations:
+## Design Decisions
 
-```bash
-alembic upgrade head
-```
+**Why async queues instead of Kafka?**
+Same publish/subscribe pattern, zero infrastructure for a personal project.
+The architecture is message-bus agnostic — swapping in Kafka or Redis Streams
+requires only changing `core/queues.py`.
 
-Run API:
+**Why SQLite instead of PostgreSQL?**
+Single user, single machine. Same SQLAlchemy ORM — one line change to upgrade.
 
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+**Why Gemini 1.5 Flash?**
+Only free LLM with a generous enough free tier (1M tokens/day) to run a
+scheduled personal project without hitting limits or paying anything.
 
-Run Streamlit (second terminal, venv active):
+## Future Improvements
 
-```bash
-streamlit run frontend/app.py
-```
+- [ ] Swap async queues for Apache Kafka for distributed deployment
+- [ ] Add user-input queries via the UI (currently auto-generated)
+- [ ] Add portfolio tracking (user enters holdings, system monitors them)
+- [ ] Migrate to PostgreSQL for multi-user support
+- [ ] Add more data sources (SEC filings, earnings calendars)
 
-Open `http://localhost:8501` and `http://localhost:8000/docs`.
+## Legacy folders
 
-## Quick start (all services in Docker)
-
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-- API: `http://localhost:8000`
-- Streamlit: `http://localhost:8501` (preconfigured with `FASTAPI_BASE_URL=http://api:8000`)
-
-Apply migrations inside the API container:
-
-```bash
-docker compose exec api alembic upgrade head
-```
-
-## Configuration
-
-All settings are environment-driven; see `.env.example`. Key variables:
-
-- `DATABASE_URL` — SQLAlchemy URL (default uses `psycopg2`)
-- `REDIS_URL` — Redis for caching or Celery-style workloads
-- `KAFKA_BOOTSTRAP_SERVERS` — `localhost:9092` on host, `kafka:29092` from the `api` container
-- `CHROMA_HOST` / `CHROMA_PORT` — `localhost` + `8001` on host; `chroma` + `8000` inside Docker
-- `GEMINI_API_KEY` / `GEMINI_MODEL` — Gemini access
-
-## Kafka notes
-
-- Topics default to `agent.events` and `finance.transactions` (see `.env.example`).
-- If the broker is down, the API **logs and continues** (suitable for local dev).
-- Debug consumer: `PYTHONPATH=. python scripts/kafka_print_consumer.py agent.events`
-
-## Testing
-
-```bash
-source .venv/bin/activate
-pytest
-```
-
-## GitHub remote
-
-The repository is initialized locally. After you create an empty repo on GitHub:
-
-```bash
-git remote add origin https://github.com/<YOUR_USER>/<YOUR_REPO>.git
-git branch -M main
-git push -u origin main
-```
-
-Replace the URL with your SSH or HTTPS remote.
-
-## Docker image
-
-The `Dockerfile` installs dependencies and runs `uvicorn` by default. Override the command for workers, Streamlit, or one-off jobs (see `docker compose` services).
-
-## Next implementation steps
-
-1. Kafka **consumer worker** that calls `services.csv_ingest` and writes `TransactionRecord` rows.
-2. **Gemini + RAG** in `FinancialExplanationAgent` using `rag.vector_store.query_similar`.
-3. **Redis** caching for aggregated dashboards.
-4. **Auth** (JWT / OAuth) and real `user_external_id` mapping.
-5. **Fraud** scoring model and **news** API integration in respective agents.
-
-## License
-
-Add a `LICENSE` file for your organization; this template does not ship a default license.
+Directories such as `api/`, `db/models/` (old ORM), `frontend/`, `rag/`, and `alembic/versions/` are kept from an earlier skeleton; their Python modules are stubbed with `DEPRECATED in v2` notes pointing to the v2 layout above. See `multi-agent-finance-cursor-plan-v2.md`.

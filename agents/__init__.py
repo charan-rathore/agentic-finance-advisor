@@ -1,5 +1,5 @@
 """
-Multi-agent finance domain: specialized agents coordinated by the orchestrator.
+Multi-agent finance (v2): ingest_agent, analysis_agent, storage_agent.
 
-Agents communicate asynchronously via Kafka topics defined in `core.config`.
+Agents communicate via asyncio queues in core.queues (see multi-agent-finance-cursor-plan-v2.md).
 """

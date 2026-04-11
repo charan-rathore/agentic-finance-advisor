@@ -1,1 +1,1 @@
-"""Database session, models, and migration helpers."""
+"""Database helpers — v2 ORM models live in core.models."""

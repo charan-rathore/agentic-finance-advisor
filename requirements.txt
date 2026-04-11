@@ -1,36 +1,37 @@
-# Web
-fastapi>=0.115.0,<1.0.0
-uvicorn[standard]>=0.32.0,<1.0.0
-python-multipart>=0.0.12,<1.0.0
+# Market data — free, no API key
+yfinance==0.2.40
 
-# Config & validation
-pydantic>=2.9.0,<3.0.0
-pydantic-settings>=2.6.0,<3.0.0
+# News parsing — free, no API key
+feedparser==6.0.11
 
-# Database
-sqlalchemy>=2.0.36,<3.0.0
-psycopg2-binary>=2.9.10,<3.0.0
-alembic>=1.14.0,<2.0.0
+# Sentiment — runs fully offline, no API cost
+textblob==0.18.0
+nltk==3.8.1
 
-# Cache & messaging
-redis>=5.2.0,<6.0.0
-aiokafka>=0.11.0,<1.0.0
+# Vector DB + embeddings — local, no cloud, no cost
+chromadb==0.5.3
+sentence-transformers==3.0.1
 
-# RAG / vectors
-chromadb>=0.5.20,<1.0.0
+# LLM — Gemini free tier only
+google-generativeai==0.7.2
 
-# LLM
-google-generativeai>=0.8.0,<1.0.0
+# Database ORM — SQLite (zero config, file on disk)
+sqlalchemy==2.0.30
 
-# Frontend & HTTP client
-streamlit>=1.40.0,<2.0.0
-httpx>=0.28.0,<1.0.0
+# UI
+streamlit==1.36.0
 
 # Utilities
-python-dotenv>=1.0.1,<2.0.0
-structlog>=24.4.0,<26.0.0
+python-dotenv==1.0.1
+tenacity==8.4.1
+pydantic==2.7.4
+loguru==0.7.2
+httpx==0.27.0
+
+# Legacy HTTP stub (optional smoke tests)
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
 
 # Dev / test
-pytest>=8.3.0,<9.0.0
-pytest-asyncio>=0.24.0,<1.0.0
-pytest-cov>=6.0.0,<7.0.0
+pytest==8.3.4
+pytest-asyncio==0.24.0

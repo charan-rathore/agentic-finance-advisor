@@ -1,24 +1,22 @@
-# API / worker image (Python 3.12)
-FROM python:3.12-slim-bookworm AS base
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app
+# Single Dockerfile for both the agents (main.py) and UI (ui/app.py)
+FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN python -m textblob.download_corpora && \
+    python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
+
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 COPY . .
 
-EXPOSE 8000
+RUN mkdir -p /app/data/chroma_db /app/data
 
-# Default: FastAPI. Override for workers, Streamlit, or Alembic.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "main.py"]

@@ -1,35 +1,26 @@
 """
-Database engine and session factory.
+Legacy session factory (v2).
 
-Uses a sync engine for compatibility with Alembic and straightforward transactions.
+Prefer using sqlalchemy.orm.Session with the engine returned by core.models.init_db.
 """
 
 from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from core.config import get_settings
+from core.models import init_db
+from core.settings import settings
 
-_settings = get_settings()
-
-engine = create_engine(
-    str(_settings.database_url),
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    echo=_settings.debug,
-)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_engine = init_db(settings.DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
 
 def get_db() -> Generator[Session, None, None]:
-    """FastAPI dependency: yield a DB session and ensure cleanup."""
-    db = SessionLocal()
+    """Yield a DB session (FastAPI-style); closes on teardown."""
+    session = SessionLocal()
     try:
-        yield db
+        yield session
     finally:
-        db.close()
+        session.close()

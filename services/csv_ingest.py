@@ -1,5 +1,5 @@
 """
-CSV transaction ingestion (parse → validate → persist).
+CSV transaction ingestion (legacy v1 helper — not used by the v2 agent pipeline).
 
 Wire this from a Kafka consumer or background task after `upload_transactions_csv`.
 """
