@@ -21,7 +21,7 @@ Production-oriented skeleton for a **multi-agent** platform: budgeting, expense 
 
 ## Prerequisites
 
-- Python **3.10+** (Docker image uses **3.12**; `from __future__ import annotations` keeps **3.9** imports working)
+- Python **3.9+** locally (Dockerfile uses **3.12**)
 - Docker Desktop (or compatible engine) for compose stack
 - [Google AI Studio](https://aistudio.google.com/) API key (optional for stubs)
 
