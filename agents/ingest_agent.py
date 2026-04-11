@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from core.models import MarketSnapshot, NewsArticle, init_db
 from core.queues import raw_market_queue, raw_news_queue
 from core.settings import settings
+from core.sec_client import fetch_financial_data_for_symbols
 
 
 async def fetch_market_data(engine) -> list[dict]:
@@ -134,17 +135,38 @@ async def fetch_news(engine) -> list[dict]:
     return articles
 
 
+async def fetch_sec_data() -> list[dict]:
+    """
+    Fetch SEC financial data for tracked symbols.
+    This runs less frequently than price/news (maybe once per day).
+    """
+    try:
+        logger.info("[Ingest Agent] Fetching SEC financial data...")
+        sec_data = await fetch_financial_data_for_symbols(settings.YFINANCE_SYMBOLS)
+        logger.info(f"[Ingest Agent] Fetched SEC data for {len(sec_data)} companies")
+        return sec_data
+    except Exception as e:
+        logger.error(f"[Ingest Agent] Error fetching SEC data: {e}")
+        return []
+
+
 async def run() -> None:
     """
     Main ingest loop. Fetches data every INGEST_INTERVAL_SECONDS, puts on queues.
+    SEC data is fetched less frequently (every 24 hours) since it changes slowly.
     Runs forever as an asyncio task.
     """
     logger.info("[Ingest Agent] Starting...")
     engine = init_db(settings.DATABASE_URL)
+    
+    # Track when we last fetched SEC data (fetch once per day)
+    last_sec_fetch = 0
+    sec_fetch_interval = 24 * 3600  # 24 hours in seconds
 
     while True:
         logger.info("[Ingest Agent] Starting fetch cycle...")
 
+        # Always fetch market data and news (real-time)
         snapshots = await fetch_market_data(engine)
         for snap in snapshots:
             await raw_market_queue.put(snap)
@@ -154,6 +176,31 @@ async def run() -> None:
         for article in articles:
             await raw_news_queue.put(article)
         logger.info(f"[Ingest Agent] Put {len(articles)} news articles on queue")
+
+        # Fetch SEC data less frequently (once per day)
+        import time
+        now = time.time()
+        if now - last_sec_fetch > sec_fetch_interval:
+            logger.info("[Ingest Agent] Time for SEC data refresh...")
+            sec_data = await fetch_sec_data()
+            
+            # Put SEC data on the news queue with special marking
+            for company_data in sec_data:
+                sec_article = {
+                    "headline": f"SEC Financial Data Update: {company_data.get('company_name', 'Unknown')}",
+                    "url": f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_data.get('cik', '').zfill(10)}.json",
+                    "body": f"Updated financial data for {company_data.get('symbol', 'N/A')}: "
+                           f"Revenue: ${company_data.get('recent_revenue', {}).get('value', 'N/A'):,} "
+                           f"Assets: ${company_data.get('recent_assets', {}).get('value', 'N/A'):,}",
+                    "published_at": company_data.get('fetched_at'),
+                    "source": "SEC EDGAR",
+                    "data_type": "sec_financial",  # Special marker for wiki processing
+                    "raw_data": company_data,  # Include full financial data
+                }
+                await raw_news_queue.put(sec_article)
+            
+            logger.info(f"[Ingest Agent] Put {len(sec_data)} SEC financial updates on queue")
+            last_sec_fetch = now
 
         logger.info(f"[Ingest Agent] Cycle done. Sleeping {settings.INGEST_INTERVAL_SECONDS}s...")
         await asyncio.sleep(settings.INGEST_INTERVAL_SECONDS)

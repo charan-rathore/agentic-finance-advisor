@@ -47,6 +47,15 @@ class Settings:
     INGEST_INTERVAL_SECONDS: int = int(os.getenv("INGEST_INTERVAL_SECONDS", "300"))
     ANALYSIS_INTERVAL_SECONDS: int = int(os.getenv("ANALYSIS_INTERVAL_SECONDS", "600"))
 
+    # ── SEC EDGAR API ─────────────────────────────────────────────────────────
+    # SEC requires User-Agent header with contact info (free, no API key needed)
+    SEC_USER_AGENT: str = os.getenv("SEC_USER_AGENT", "Personal Finance Advisor bot@example.com")
+    SEC_BASE_URL: str = "https://data.sec.gov/api/xbrl"
+    
+    # ── Data Storage ──────────────────────────────────────────────────────────
+    RAW_DATA_DIR: str = os.getenv("RAW_DATA_DIR", "./data/raw")
+    PROCESSED_DATA_DIR: str = os.getenv("PROCESSED_DATA_DIR", "./data/processed")
+
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
