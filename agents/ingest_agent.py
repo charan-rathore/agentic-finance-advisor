@@ -68,6 +68,8 @@ async def fetch_market_data(engine) -> list[dict]:
                 "price": round(float(price), 2),
                 "volume": round(float(vol or 0), 0),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "source": "yfinance",
+                "market_time": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),
             }
             results.append(snap)
 

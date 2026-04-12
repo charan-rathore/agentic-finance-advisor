@@ -45,6 +45,7 @@ from tenacity import (
 import logging
 
 from core.settings import settings
+from core.company_intelligence import get_enhanced_context_for_symbol
 
 
 # ── Wiki directory helpers ────────────────────────────────────────────────────
@@ -149,6 +150,8 @@ async def ingest_to_wiki(articles: list[dict], prices: list[dict]) -> None:
 
     for symbol in symbols[:5]:  # cap at 5 per cycle to respect rate limits
         existing_page = _read_wiki_file(f"stocks/{symbol}.md")
+        company_context = get_enhanced_context_for_symbol(symbol)
+        
         prompt = f"""You are maintaining a financial knowledge base wiki.
 Update the wiki page for stock symbol {symbol}.
 
@@ -156,20 +159,23 @@ EXISTING PAGE CONTENT (may be empty if this is the first time):
 {existing_page or '(new page — create it)'}
 
 NEW DATA TO INTEGRATE:
-Current prices:
+Current prices (with timestamps):
 {prices_text}
 
 Recent news articles:
 {articles_text}
 
-INSTRUCTIONS:
+{company_context}
+
+CRITICAL INSTRUCTIONS:
 - Write a complete updated markdown page for {symbol}
 - Include sections: ## Summary, ## Recent Price Action, ## News & Sentiment, ## Key Risks, ## Cross-References
-- In Cross-References, link to related concept pages using [[wikilink]] syntax
-- Keep the page under 400 words — be concise and factual
-- Do NOT invent data. Only use what's in NEW DATA above.
-- If existing page has info not contradicted by new data, preserve it.
-- End with a `> Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}` line
+- PRICE ACCURACY: Only use exact prices from NEW DATA above with proper timestamps. If no current price data, state "Price data pending next market update"
+- RISK ANALYSIS: Always include specific, material risks for this company based on known industry/company context (litigation, competition, regulatory, market risks)
+- CROSS-REFERENCES: Use sophisticated financial concepts like [[Sector Rotation]], [[Dividend Aristocrats]], [[Patent Cliff Risk]], [[Litigation Exposure]] rather than generic terms
+- FACTUAL GROUNDING: Do NOT invent specific numbers. Use phrases like "recent trading near" or "approximately" for estimates
+- Keep under 400 words but be substantive
+- End with `> Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}` with exact timestamp
 
 WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
 
