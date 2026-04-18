@@ -1,5 +1,6 @@
 # Market data — free, no API key
-yfinance==0.2.40
+# yfinance 0.2.40 broke against current Yahoo endpoints in early 2026; 1.3.0 works.
+yfinance>=1.3.0,<2.0
 
 # News parsing — free, no API key
 feedparser==6.0.11
@@ -31,6 +32,17 @@ httpx==0.27.0
 
 # SEC EDGAR API integration
 aiofiles==24.1.0  # For async file operations
+
+# Extended data sources for stronger knowledge base
+# sec-edgar-downloader duplicates the companyfacts path in core/sec_client.py; tracked
+# for deletion in P1 of PROJECT_TODO.md. Left in for now so fetchers.py keeps importing.
+sec-edgar-downloader==5.1.0
+fredapi==0.5.2
+praw==7.7.1
+beautifulsoup4==4.12.3
+requests==2.32.3
+pyyaml==6.0.1
+# Alpha Vantage + Finnhub are called via plain httpx — no SDK needed.
 
 # Legacy HTTP stub (optional smoke tests)
 fastapi==0.115.6

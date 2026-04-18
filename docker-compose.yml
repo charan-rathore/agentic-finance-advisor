@@ -1,6 +1,6 @@
 version: "3.9"
 
-# Shared volume so both services read/write the same SQLite + ChromaDB files
+# Shared volume so both services read/write the same SQLite DB + LLM Wiki markdown.
 volumes:
   shared_data:
 

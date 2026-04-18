@@ -53,8 +53,43 @@ class Settings:
     SEC_BASE_URL: str = "https://data.sec.gov/api/xbrl"
     
     # ── Data Storage ──────────────────────────────────────────────────────────
-    RAW_DATA_DIR: str = os.getenv("RAW_DATA_DIR", "./data/raw")
+    # Historical note: `DATA_RAW_DIR` was a duplicate alias. Kept as a property for
+    # backward compatibility; writes should use RAW_DATA_DIR.
+    RAW_DATA_DIR: str = os.getenv("RAW_DATA_DIR", os.getenv("DATA_RAW_DIR", "./data/raw"))
     PROCESSED_DATA_DIR: str = os.getenv("PROCESSED_DATA_DIR", "./data/processed")
+
+    @property
+    def DATA_RAW_DIR(self) -> str:  # noqa: N802 — preserved name used by older callers
+        return self.RAW_DATA_DIR
+
+    # ── Extended Data Sources ─────────────────────────────────────────────────
+    FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
+    ALPHA_VANTAGE_API_KEY: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+    FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
+    REDDIT_CLIENT_ID: str = os.getenv("REDDIT_CLIENT_ID", "")
+    REDDIT_CLIENT_SECRET: str = os.getenv("REDDIT_CLIENT_SECRET", "")
+    REDDIT_USER_AGENT: str = os.getenv("REDDIT_USER_AGENT", "FinanceBot/1.0")
+    SEC_FILING_TYPES: list[str] = [
+        s.strip()
+        for s in os.getenv("SEC_FILING_TYPES", "8-K,10-Q").split(",")
+        if s.strip()
+    ]
+
+    # ── Fetch cadences (hours) — used by ingest agent to throttle heavy sources ─
+    SEC_FETCH_INTERVAL_HOURS: float = float(os.getenv("SEC_FETCH_INTERVAL_HOURS", "24"))
+    MACRO_FETCH_INTERVAL_HOURS: float = float(os.getenv("MACRO_FETCH_INTERVAL_HOURS", "24"))
+    ALPHA_VANTAGE_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("ALPHA_VANTAGE_FETCH_INTERVAL_HOURS", "24")
+    )
+    FINNHUB_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("FINNHUB_FETCH_INTERVAL_HOURS", "1")
+    )
+
+    # ── Wiki Staleness Configuration ──────────────────────────────────────────
+    WIKI_LINT_STALE_HOURS_NEWS: int = int(os.getenv("WIKI_LINT_STALE_HOURS_NEWS", "12"))
+    WIKI_LINT_STALE_HOURS_PRICE: int = int(os.getenv("WIKI_LINT_STALE_HOURS_PRICE", "6"))
+    WIKI_LINT_STALE_HOURS_SEC: int = int(os.getenv("WIKI_LINT_STALE_HOURS_SEC", "168"))
+    WIKI_LINT_STALE_HOURS_MACRO: int = int(os.getenv("WIKI_LINT_STALE_HOURS_MACRO", "72"))
 
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

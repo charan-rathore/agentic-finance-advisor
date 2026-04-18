@@ -31,6 +31,8 @@ from textblob import TextBlob
 from core.settings import settings
 from core.queues import raw_market_queue, raw_news_queue, insights_queue
 from core.wiki import ingest_to_wiki, query_wiki, lint_wiki
+from core.fetchers import fetch_google_news_rss
+from core.wiki_ingest import process_all_new_raw_files
 
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
@@ -48,6 +50,52 @@ def analyze_sentiment(text: str) -> tuple[str, float]:
     else:
         label = "neutral"
     return label, round(score, 4)
+
+
+# ── Prompt builder (kept for unit tests and ad-hoc Gemini calls) ──────────────
+
+def build_prompt(
+    question: str,
+    prices: list[dict],
+    articles: list[dict],
+    sentiment_rows: list[dict],
+) -> str:
+    """
+    Build a Gemini prompt that bundles a user question with the latest context.
+
+    v2 used this as the primary analysis path. v3 prefers `query_wiki` because
+    the wiki already contains pre-synthesised context, but this helper is kept
+    for two reasons: (1) unit tests assert it embeds the question and a
+    `CURRENT STOCK PRICES:` section; (2) it gives us a direct-context fallback
+    when the wiki is empty (very first run, or after a wipe).
+    """
+    price_lines = "\n".join(
+        f"- {p.get('symbol','?')}: ${p.get('price','?')} (vol: {p.get('volume','?')})"
+        for p in prices
+    ) or "(no recent prices)"
+
+    headline_lines = "\n".join(
+        f"- [{a.get('source','')}] {a.get('headline','')}"
+        for a in articles[:20]
+    ) or "(no recent articles)"
+
+    sentiment_lines = "\n".join(
+        f"- {s.get('sentiment_label','?')} ({s.get('sentiment_score','?')}): "
+        f"{s.get('headline','')}"
+        for s in sentiment_rows[:20]
+    ) or "(no sentiment yet)"
+
+    return (
+        "You are a concise, data-driven personal finance AI assistant.\n"
+        "Answer the user's question using ONLY the context below. Cite specific\n"
+        "prices, headlines or sentiment signals you rely on. End with a one-line\n"
+        "risk disclaimer.\n\n"
+        f"USER QUESTION: {question}\n\n"
+        f"CURRENT STOCK PRICES:\n{price_lines}\n\n"
+        f"RECENT HEADLINES:\n{headline_lines}\n\n"
+        f"SENTIMENT SIGNAL:\n{sentiment_lines}\n\n"
+        "YOUR RESPONSE:"
+    )
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
@@ -149,10 +197,33 @@ async def run() -> None:
         )
         last_analysis = now
 
+        # ── Process whatever the ingest agent already fetched ──────────────────
+        # Extended fetchers (SEC, macro, Alpha Vantage, Finnhub, Reddit, earnings,
+        # market sentiment) live on the ingest agent with per-source cadences now
+        # — running them on every 10-minute analysis cycle re-downloaded 7 MB SEC
+        # blobs 144×/day. Here we just scan data/raw/ and feed new payloads into
+        # the wiki.
+        try:
+            processed_count = await process_all_new_raw_files()
+            logger.info(f"[Analysis Agent] Processed {processed_count} new raw data files")
+        except Exception as e:
+            logger.error(f"[Analysis Agent] Error processing raw files into wiki: {e}")
+
         # ── Periodic wiki lint ────────────────────────────────────────────────
         if now - last_lint > lint_interval_seconds:
             logger.info("[Analysis Agent] Running wiki lint...")
-            await lint_wiki()
+            lint_results = await lint_wiki()
+            
+            # Check for symbols that need refresh
+            needs_refresh = lint_results.get("needs_refresh", [])
+            if needs_refresh:
+                logger.info(f"[Analysis Agent] Refreshing stale data for: {needs_refresh}")
+                # Trigger targeted refresh for stale symbols
+                stale_symbols = [item for item in needs_refresh if len(item) <= 5 and item.isupper()]
+                if stale_symbols:
+                    await fetch_google_news_rss(stale_symbols)
+                    await process_all_new_raw_files()
+            
             last_lint = now
 
         await asyncio.sleep(10)

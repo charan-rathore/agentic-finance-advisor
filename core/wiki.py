@@ -43,6 +43,7 @@ from tenacity import (
     before_sleep_log,
 )
 import logging
+import yaml
 
 from core.settings import settings
 from core.company_intelligence import get_enhanced_context_for_symbol
@@ -63,11 +64,22 @@ def _read_wiki_file(rel_path: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
-def _write_wiki_file(rel_path: str, content: str) -> None:
-    """Write (overwrite) a wiki file."""
-    p = _wiki_path(rel_path)
+def _write_wiki_file(path: "str | Path", content: str) -> None:
+    """
+    Write (overwrite) a wiki file. Accepts either a relative string path (resolved
+    against WIKI_DIR) or an absolute Path. Writes are synchronous — markdown files
+    are tiny and this avoids the trap of returning an un-awaited coroutine from a
+    sync call site.
+    """
+    p = _wiki_path(path) if isinstance(path, str) else Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    logger.debug(f"[Wiki] Wrote {rel_path} ({len(content)} chars)")
+    logger.debug(f"[Wiki] Wrote {p} ({len(content)} chars)")
+
+
+async def _awrite_wiki_file(path: "str | Path", content: str) -> None:
+    """Async wrapper kept for wiki_ingest.py callers that live inside coroutines."""
+    _write_wiki_file(path, content)
 
 
 def _append_log(entry: str) -> None:
@@ -76,6 +88,11 @@ def _append_log(entry: str) -> None:
     log_path = _wiki_path("log.md")
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"\n## [{timestamp}] {entry}\n")
+
+
+async def _aappend_log(entry: str) -> None:
+    """Async wrapper for use from inside coroutines."""
+    _append_log(entry)
 
 
 def list_wiki_pages() -> list[str]:
@@ -180,7 +197,22 @@ CRITICAL INSTRUCTIONS:
 WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
 
         page_content = await call_gemini(prompt)
-        _write_wiki_file(f"stocks/{symbol}.md", page_content)
+        
+        # Add YAML frontmatter
+        frontmatter = {
+            "symbol": symbol,
+            "page_type": "stock_entity",
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "ttl_hours": 24,
+            "data_sources": ["yfinance", "rss_news"],
+            "confidence": "high",
+            "stale": False
+        }
+        
+        frontmatter_text = "---\n" + yaml.dump(frontmatter, default_flow_style=False) + "---\n\n"
+        final_content = frontmatter_text + page_content
+        
+        _write_wiki_file(f"stocks/{symbol}.md", final_content)
         logger.info(f"[Wiki] Updated stocks/{symbol}.md")
 
     # ── Step 2: Update overview synthesis ────────────────────────────────────
@@ -324,44 +356,173 @@ YOUR RESPONSE:"""
 
 # ── Operation 3: Lint the wiki ────────────────────────────────────────────────
 
-async def lint_wiki() -> str:
+async def lint_wiki() -> dict:
     """
-    Periodic wiki health-check. Gemini reviews the wiki for:
-    - Contradictions between pages (e.g. conflicting price narratives)
-    - Stale claims superseded by newer data
-    - Orphan pages with no inbound links
-    - Important entities without their own page
-    - Missing cross-references
-
-    Returns a summary of the lint report, also filed as a wiki page.
-    This keeps the wiki healthy as it grows and is a great story for interviews:
-    'The system self-audits its own knowledge base periodically.'
+    Improved wiki health-check with tiered TTL decay and YAML frontmatter support.
+    
+    Walks all .md files, checks YAML frontmatter for staleness based on TTL,
+    marks stale files, detects contradictions, and returns structured results.
+    
+    Returns dict: {"stale_pages": [...], "contradictions": [...], "needs_refresh": [...]}
     """
-    index_content = _read_wiki_file("index.md")
-    log_tail = _read_wiki_file("log.md")[-2000:]  # last ~2000 chars of log
+    logger.info("[Wiki] Starting comprehensive lint with TTL decay...")
+    
+    wiki_root = Path(settings.WIKI_DIR)
+    if not wiki_root.exists():
+        return {"stale_pages": [], "contradictions": [], "needs_refresh": []}
+    
+    current_time = datetime.now(timezone.utc)
+    stale_pages = []
+    needs_refresh = []
+    page_summaries = []
+    
+    # Walk all markdown files
+    for md_file in wiki_root.rglob("*.md"):
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            rel_path = str(md_file.relative_to(wiki_root))
+            
+            # Parse YAML frontmatter
+            frontmatter = None
+            page_content = content
+            
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    try:
+                        frontmatter = yaml.safe_load(parts[1])
+                        page_content = parts[2].strip()
+                    except yaml.YAMLError as e:
+                        logger.warning(f"[Lint] Invalid YAML in {rel_path}: {e}")
+            
+            if not frontmatter:
+                # No frontmatter - assume stale
+                stale_pages.append(rel_path)
+                needs_refresh.append(rel_path)
+                continue
+            
+            # Check staleness based on TTL
+            last_updated_str = frontmatter.get("last_updated")
+            ttl_hours = frontmatter.get("ttl_hours", 24)
+            
+            if last_updated_str:
+                try:
+                    last_updated = datetime.fromisoformat(last_updated_str.replace('Z', '+00:00'))
+                    age_hours = (current_time - last_updated).total_seconds() / 3600
+                    
+                    if age_hours > ttl_hours:
+                        # Mark as stale
+                        stale_pages.append(rel_path)
+                        
+                        # Add stale warning to content if not already present
+                        if "⚠️ STALE" not in page_content:
+                            stale_banner = f"> ⚠️ STALE — last updated {age_hours:.1f} hours ago\n\n"
+                            page_content = stale_banner + page_content
+                        
+                        # Update frontmatter to mark as stale
+                        frontmatter["stale"] = True
+                        
+                        # Write updated content
+                        updated_frontmatter = "---\n" + yaml.dump(frontmatter, default_flow_style=False) + "---\n\n"
+                        updated_content = updated_frontmatter + page_content
+                        md_file.write_text(updated_content, encoding='utf-8')
+                        
+                        # Add to needs refresh for targeted re-fetch
+                        symbol = frontmatter.get("symbol")
+                        if symbol:
+                            needs_refresh.append(symbol)
+                        else:
+                            needs_refresh.append(rel_path)
+                        
+                        logger.debug(f"[Lint] Marked {rel_path} as stale ({age_hours:.1f}h old, TTL: {ttl_hours}h)")
+                
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"[Lint] Invalid timestamp in {rel_path}: {e}")
+                    stale_pages.append(rel_path)
+            
+            # Collect page summary for contradiction detection
+            page_summaries.append({
+                "path": rel_path,
+                "symbol": frontmatter.get("symbol"),
+                "page_type": frontmatter.get("page_type"),
+                "content_preview": page_content[:500],
+                "stale": frontmatter.get("stale", False)
+            })
+            
+        except Exception as e:
+            logger.error(f"[Lint] Error processing {md_file}: {e}")
+            continue
+    
+    # Contradiction detection using Gemini
+    contradictions = []
+    if len(page_summaries) > 1:
+        try:
+            summaries_text = "\n".join([
+                f"**{p['path']}** ({p.get('page_type', 'unknown')}) - {p['content_preview'][:200]}..."
+                for p in page_summaries[:20]  # Limit to avoid token overflow
+            ])
+            
+            contradiction_prompt = f"""Review these wiki page summaries for contradictions.
 
-    prompt = f"""You are auditing a financial knowledge base wiki.
+WIKI PAGE SUMMARIES:
+{summaries_text}
 
-WIKI INDEX:
-{index_content}
+Identify any pages that contradict each other. For each contradiction found:
+1. Name the two conflicting pages
+2. Describe the specific conflict
+3. Suggest which information is likely more reliable
 
-RECENT LOG (last operations):
-{log_tail}
+Format as:
+- **Contradiction**: page1.md vs page2.md - [description of conflict]
 
-Perform a health check and report:
-1. **Potential contradictions** — pages that may conflict with each other
-2. **Stale pages** — pages likely to have outdated info (older than 1 day)
-3. **Orphan pages** — pages with no inbound links from other pages
-4. **Missing pages** — important entities/concepts mentioned but lacking their own page
-5. **Suggested next ingests** — what data would most improve the wiki right now?
+If no contradictions found, respond with "No contradictions detected."
 
-Be specific. Reference page names. Keep the report under 300 words.
+CONTRADICTION ANALYSIS:"""
 
-LINT REPORT:"""
-
-    report = await call_gemini(prompt)
+            contradiction_response = await call_gemini(contradiction_prompt)
+            
+            # Parse contradictions from response
+            for line in contradiction_response.split('\n'):
+                if '**Contradiction**:' in line:
+                    contradictions.append(line.strip())
+                    
+        except Exception as e:
+            logger.error(f"[Lint] Error in contradiction detection: {e}")
+    
+    # Generate lint report
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
-    _write_wiki_file(f"insights/lint_{timestamp}.md", f"# Wiki Lint Report\n\n{report}\n")
-    _append_log(f"lint | health-check complete")
-    logger.info("[Wiki] Lint complete.")
-    return report
+    
+    report_content = f"""# Wiki Lint Report
+
+**Generated**: {current_time.strftime('%Y-%m-%d %H:%M UTC')}
+
+## Staleness Analysis
+- **Total pages checked**: {len(page_summaries)}
+- **Stale pages**: {len(stale_pages)}
+- **Pages needing refresh**: {len(set(needs_refresh))}
+
+### Stale Pages:
+{chr(10).join(f'- {page}' for page in stale_pages) if stale_pages else '- None'}
+
+## Contradiction Detection
+{chr(10).join(contradictions) if contradictions else '- No contradictions detected'}
+
+## Refresh Recommendations
+The following symbols/pages should be refreshed with new data:
+{chr(10).join(f'- {item}' for item in set(needs_refresh)) if needs_refresh else '- None'}
+
+---
+*Automated lint report generated by wiki health-check system*
+"""
+    
+    # Save lint report
+    _write_wiki_file(f"insights/lint_{timestamp}.md", report_content)
+    _append_log(f"lint | {len(stale_pages)} stale, {len(contradictions)} contradictions")
+    
+    logger.info(f"[Wiki] Lint complete: {len(stale_pages)} stale pages, {len(contradictions)} contradictions")
+    
+    return {
+        "stale_pages": stale_pages,
+        "contradictions": contradictions,
+        "needs_refresh": list(set(needs_refresh))
+    }

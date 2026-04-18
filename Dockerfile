@@ -13,10 +13,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m textblob.download_corpora && \
     python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
 
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# v3 removed the RAG stack (ChromaDB + sentence-transformers). Do not re-add the
+# embedding download here — the LLM Wiki under data/wiki/ is plain markdown.
 
 COPY . .
 
-RUN mkdir -p /app/data/chroma_db /app/data
+RUN mkdir -p /app/data /app/data/wiki /app/data/raw
 
 CMD ["python", "main.py"]
