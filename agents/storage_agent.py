@@ -16,7 +16,7 @@ SQLite tables read:    insights, market_snapshots, news_articles, insights
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from loguru import logger
 from sqlalchemy import text
@@ -29,7 +29,7 @@ from core.settings import settings
 _engine = None
 
 
-def get_engine():
+def get_engine() -> object:  # sqlalchemy.Engine
     """Return the SQLAlchemy engine, initializing it if needed."""
     global _engine
     if _engine is None:
@@ -56,7 +56,7 @@ async def run() -> None:
                         insight_text=insight.get("insight_text", ""),
                         sentiment_summary=insight.get("sentiment_summary", ""),
                         sources=insight.get("sources", "[]"),
-                        generated_at=datetime.now(timezone.utc),
+                        generated_at=datetime.now(UTC),
                         model_used=settings.GEMINI_MODEL,
                     )
                 )
@@ -64,7 +64,7 @@ async def run() -> None:
 
             logger.info("[Storage Agent] Insight saved to SQLite")
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except Exception as e:
             logger.error(f"[Storage Agent] Error saving insight: {e}")

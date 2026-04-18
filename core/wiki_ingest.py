@@ -9,37 +9,37 @@ structured YAML frontmatter and rich content.
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional
 
 import yaml
 from loguru import logger
 
 from core.settings import settings
-from core.wiki import _get_gemini_model, _awrite_wiki_file, _aappend_log
+from core.wiki import _aappend_log, _awrite_wiki_file, _get_gemini_model
 
 
 def _create_frontmatter(
     page_type: str,
     symbol: Optional[str] = None,
     ttl_hours: int = 24,
-    data_sources: list[str] = None,
-    confidence: str = "medium"
+    data_sources: list[str] | None = None,
+    confidence: str = "medium",
 ) -> str:
     """Create YAML frontmatter for wiki pages."""
     frontmatter = {
         "page_type": page_type,
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": datetime.now(UTC).isoformat(),
         "ttl_hours": ttl_hours,
         "data_sources": data_sources or [],
         "confidence": confidence,
-        "stale": False
+        "stale": False,
     }
-    
+
     if symbol:
         frontmatter["symbol"] = symbol
-    
+
     return "---\n" + yaml.dump(frontmatter, default_flow_style=False) + "---\n\n"
 
 
@@ -47,16 +47,16 @@ async def process_sec_filing(raw_path: Path) -> None:
     """Process SEC filing and update stock wiki page."""
     try:
         logger.info(f"[WikiIngest] Processing SEC filing: {raw_path.name}")
-        
+
         # Read raw SEC data
-        with open(raw_path, 'r') as f:
+        with open(raw_path) as f:
             sec_data = json.load(f)
-        
+
         symbol = sec_data.get("symbol", "UNKNOWN")
         filing_type = sec_data.get("filing_type", "UNKNOWN")
         filing_date = sec_data.get("date", "UNKNOWN")
         filing_text = sec_data.get("text", "")
-        
+
         # Prepare Gemini prompt for SEC analysis
         prompt = f"""
 Analyze this {filing_type} SEC filing for {symbol} and extract key information:
@@ -81,10 +81,10 @@ If the filing text is incomplete or unclear, note what information is missing.
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         analysis = response.text.strip()
-        
+
         # Read existing stock page or create new one
         stock_wiki_path = Path(settings.WIKI_DIR) / "stocks" / f"{symbol}.md"
-        
+
         existing_content = ""
         if stock_wiki_path.exists():
             existing_content = stock_wiki_path.read_text()
@@ -93,42 +93,44 @@ If the filing text is incomplete or unclear, note what information is missing.
                 parts = existing_content.split("---", 2)
                 if len(parts) >= 3:
                     existing_content = parts[2].strip()
-        
+
         # Create new content with SEC section
         sec_section = f"""
 ## SEC Filing: {filing_type} ({filing_date})
 
 {analysis}
 
-> Source: SEC EDGAR filing processed on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+> Source: SEC EDGAR filing processed on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}
 """
-        
+
         # Update or append SEC section
         if "## SEC Filing:" in existing_content:
             # Replace existing SEC section
             pattern = r"## SEC Filing:.*?(?=\n## |\n> Last updated:|\Z)"
-            existing_content = re.sub(pattern, sec_section.strip(), existing_content, flags=re.DOTALL)
+            existing_content = re.sub(
+                pattern, sec_section.strip(), existing_content, flags=re.DOTALL
+            )
         else:
             # Append new SEC section
             existing_content += "\n" + sec_section
-        
+
         # Add frontmatter and write
         frontmatter = _create_frontmatter(
             page_type="stock_entity",
             symbol=symbol,
             ttl_hours=168,  # SEC data stays fresh for a week
             data_sources=["sec_edgar"],
-            confidence="high"
+            confidence="high",
         )
-        
+
         final_content = frontmatter + existing_content.strip()
         await _awrite_wiki_file(stock_wiki_path, final_content)
-        
+
         # Update index
         await _update_wiki_index(f"Updated {symbol} with {filing_type} filing analysis")
-        
+
         logger.info(f"[WikiIngest] Updated {symbol} wiki with SEC {filing_type} analysis")
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error processing SEC filing {raw_path}: {e}")
 
@@ -137,13 +139,13 @@ async def process_macro_data(raw_path: Path) -> None:
     """Process macro indicators and update macro environment wiki page."""
     try:
         logger.info(f"[WikiIngest] Processing macro data: {raw_path.name}")
-        
+
         # Read raw macro data
-        with open(raw_path, 'r') as f:
+        with open(raw_path) as f:
             macro_data = json.load(f)
-        
+
         indicators = macro_data.get("indicators", {})
-        
+
         # Prepare Gemini prompt for macro analysis
         prompt = f"""
 Analyze these current US economic indicators and write a comprehensive macro environment assessment:
@@ -169,24 +171,24 @@ Focus on what this means for different types of equity investments (growth vs va
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         analysis = response.text.strip()
-        
+
         # Create macro environment page
         macro_wiki_path = Path(settings.WIKI_DIR) / "concepts" / "macro_environment.md"
-        
+
         frontmatter = _create_frontmatter(
             page_type="concept",
             ttl_hours=72,  # Macro data refreshes every 3 days
             data_sources=["fred_api"],
-            confidence="high"
+            confidence="high",
         )
-        
+
         final_content = frontmatter + analysis
         await _awrite_wiki_file(macro_wiki_path, final_content)
-        
+
         await _update_wiki_index("Updated macro environment analysis")
-        
+
         logger.info("[WikiIngest] Updated macro environment wiki page")
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error processing macro data {raw_path}: {e}")
 
@@ -195,14 +197,14 @@ async def process_reddit_sentiment(raw_path: Path) -> None:
     """Process Reddit sentiment and update stock wiki page."""
     try:
         logger.info(f"[WikiIngest] Processing Reddit sentiment: {raw_path.name}")
-        
+
         # Read raw Reddit data
-        with open(raw_path, 'r') as f:
+        with open(raw_path) as f:
             reddit_data = json.load(f)
-        
+
         symbol = reddit_data.get("symbol", "UNKNOWN")
         posts = reddit_data.get("posts", [])
-        
+
         # Prepare Gemini prompt for sentiment analysis
         prompt = f"""
 Analyze Reddit community sentiment for {symbol} based on these posts from r/investing and r/stocks:
@@ -229,10 +231,10 @@ If sentiment is mixed, explain the different viewpoints clearly.
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         sentiment_analysis = response.text.strip()
-        
+
         # Update stock wiki page
         stock_wiki_path = Path(settings.WIKI_DIR) / "stocks" / f"{symbol}.md"
-        
+
         existing_content = ""
         if stock_wiki_path.exists():
             existing_content = stock_wiki_path.read_text()
@@ -241,39 +243,41 @@ If sentiment is mixed, explain the different viewpoints clearly.
                 parts = existing_content.split("---", 2)
                 if len(parts) >= 3:
                     existing_content = parts[2].strip()
-        
+
         # Create community sentiment section
         sentiment_section = f"""
 ## Community Sentiment
 
 {sentiment_analysis}
 
-> Source: Reddit analysis from r/investing and r/stocks on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+> Source: Reddit analysis from r/investing and r/stocks on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}
 """
-        
+
         # Update or append sentiment section
         if "## Community Sentiment" in existing_content:
             pattern = r"## Community Sentiment.*?(?=\n## |\n> Last updated:|\Z)"
-            existing_content = re.sub(pattern, sentiment_section.strip(), existing_content, flags=re.DOTALL)
+            existing_content = re.sub(
+                pattern, sentiment_section.strip(), existing_content, flags=re.DOTALL
+            )
         else:
             existing_content += "\n" + sentiment_section
-        
+
         # Add frontmatter and write
         frontmatter = _create_frontmatter(
             page_type="stock_entity",
             symbol=symbol,
             ttl_hours=12,  # Reddit sentiment changes quickly
             data_sources=["reddit"],
-            confidence="medium"
+            confidence="medium",
         )
-        
+
         final_content = frontmatter + existing_content.strip()
         await _awrite_wiki_file(stock_wiki_path, final_content)
-        
+
         await _update_wiki_index(f"Updated {symbol} with Reddit community sentiment")
-        
+
         logger.info(f"[WikiIngest] Updated {symbol} wiki with Reddit sentiment")
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error processing Reddit sentiment {raw_path}: {e}")
 
@@ -282,13 +286,13 @@ async def process_earnings_calendar(raw_path: Path) -> None:
     """Process earnings calendar and create/update earnings calendar wiki page."""
     try:
         logger.info(f"[WikiIngest] Processing earnings calendar: {raw_path.name}")
-        
+
         # Read raw earnings data
-        with open(raw_path, 'r') as f:
+        with open(raw_path) as f:
             earnings_data = json.load(f)
-        
+
         companies = earnings_data.get("companies", {})
-        
+
         # Prepare Gemini prompt for earnings analysis
         prompt = f"""
 Create an earnings calendar wiki page based on this upcoming earnings data:
@@ -318,24 +322,24 @@ Format this as a comprehensive earnings calendar that helps investors prepare.
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         calendar_content = response.text.strip()
-        
+
         # Create earnings calendar page
         earnings_wiki_path = Path(settings.WIKI_DIR) / "concepts" / "earnings_calendar.md"
-        
+
         frontmatter = _create_frontmatter(
             page_type="concept",
             ttl_hours=24,  # Earnings calendar updates daily
             data_sources=["yfinance_calendar"],
-            confidence="high"
+            confidence="high",
         )
-        
+
         final_content = frontmatter + calendar_content
         await _awrite_wiki_file(earnings_wiki_path, final_content)
-        
+
         await _update_wiki_index("Updated earnings calendar")
-        
+
         logger.info("[WikiIngest] Updated earnings calendar wiki page")
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error processing earnings calendar {raw_path}: {e}")
 
@@ -344,11 +348,11 @@ async def process_market_sentiment(raw_path: Path) -> None:
     """Process VIX and Fear & Greed data to update market sentiment wiki page."""
     try:
         logger.info(f"[WikiIngest] Processing market sentiment: {raw_path.name}")
-        
+
         # Read raw market sentiment data
-        with open(raw_path, 'r') as f:
+        with open(raw_path) as f:
             sentiment_data = json.load(f)
-        
+
         # Prepare Gemini prompt for market sentiment analysis
         prompt = f"""
 Analyze current market sentiment based on this VIX and Fear & Greed data:
@@ -382,24 +386,24 @@ Include specific numbers and clear interpretations.
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         sentiment_analysis = response.text.strip()
-        
+
         # Create market sentiment page
         sentiment_wiki_path = Path(settings.WIKI_DIR) / "concepts" / "market_sentiment.md"
-        
+
         frontmatter = _create_frontmatter(
             page_type="concept",
             ttl_hours=6,  # Market sentiment changes quickly
             data_sources=["vix", "cnn_fear_greed"],
-            confidence="high"
+            confidence="high",
         )
-        
+
         final_content = frontmatter + sentiment_analysis
         await _awrite_wiki_file(sentiment_wiki_path, final_content)
-        
+
         await _update_wiki_index("Updated market sentiment analysis")
-        
+
         logger.info("[WikiIngest] Updated market sentiment wiki page")
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error processing market sentiment {raw_path}: {e}")
 
@@ -414,7 +418,7 @@ async def process_sec_company_facts(raw_path: Path) -> None:
     """
     try:
         logger.info(f"[WikiIngest] Processing SEC company facts: {raw_path.name}")
-        with open(raw_path, "r") as f:
+        with open(raw_path) as f:
             sec_data = json.load(f)
 
         cik = str(sec_data.get("cik", "")).zfill(10)
@@ -422,22 +426,20 @@ async def process_sec_company_facts(raw_path: Path) -> None:
         us_gaap = sec_data.get("facts", {}).get("us-gaap", {})
 
         from core.sec_client import sec_client  # local to avoid cycles
+
         symbol = None
         for ticker, mapped_cik in getattr(sec_client, "_TICKER_TO_CIK", {}).items():
             if mapped_cik.lstrip("0") == cik.lstrip("0"):
                 symbol = ticker
                 break
         if symbol is None:
-            fname = raw_path.name
             for candidate in settings.YFINANCE_SYMBOLS:
                 cand_cik = await sec_client.search_company_by_ticker(candidate)
                 if cand_cik and cand_cik.lstrip("0") == cik.lstrip("0"):
                     symbol = candidate
                     break
         if symbol is None:
-            logger.warning(
-                f"[WikiIngest] Could not map CIK {cik} to a tracked ticker; skipping"
-            )
+            logger.warning(f"[WikiIngest] Could not map CIK {cik} to a tracked ticker; skipping")
             return
 
         def _latest(tag: str) -> dict | None:
@@ -445,7 +447,8 @@ async def process_sec_company_facts(raw_path: Path) -> None:
             return units[-1] if units else None
 
         highlights = {
-            "Revenues": _latest("Revenues") or _latest("RevenueFromContractWithCustomerExcludingAssessedTax"),
+            "Revenues": _latest("Revenues")
+            or _latest("RevenueFromContractWithCustomerExcludingAssessedTax"),
             "NetIncome": _latest("NetIncomeLoss"),
             "Assets": _latest("Assets"),
             "Liabilities": _latest("Liabilities"),
@@ -483,7 +486,7 @@ Limit to ~200 words. Markdown only, no preamble."""
         new_section = (
             f"\n{section_header}\n\n{analysis}\n\n"
             f"> Source: SEC EDGAR company facts, processed "
-            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
         )
 
         if section_header in existing_content:
@@ -512,19 +515,22 @@ Limit to ~200 words. Markdown only, no preamble."""
 async def process_alpha_vantage(raw_path: Path) -> None:
     """Route Alpha Vantage quote/overview/income payloads into the symbol's wiki page."""
     try:
-        with open(raw_path, "r") as f:
+        with open(raw_path) as f:
             data = json.load(f)
         symbol = data.get("symbol")
         endpoint = data.get("endpoint", "")
         if not symbol:
             return
 
+        # Support both the new RawPayload envelope (payload={...}) and the old
+        # flat shape that earlier builds wrote to disk.
+        inner = data.get("payload") if isinstance(data.get("payload"), dict) else data
         body = (
-            data.get("quote")
-            or data.get("overview")
+            inner.get("quote")
+            or inner.get("overview")
             or {
-                "annual_reports": data.get("annual_reports", []),
-                "quarterly_reports": data.get("quarterly_reports", []),
+                "annual_reports": inner.get("annual_reports", []),
+                "quarterly_reports": inner.get("quarterly_reports", []),
             }
         )
         prompt = f"""Write a concise wiki section for {symbol} based on this Alpha Vantage
@@ -557,7 +563,7 @@ Markdown only, no preamble."""
         section = (
             f"\n{section_header}\n\n{analysis}\n\n"
             f"> Source: Alpha Vantage, fetched "
-            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
         )
         if section_header in existing:
             pattern = rf"{re.escape(section_header)}.*?(?=\n## |\n> Last updated:|\Z)"
@@ -582,15 +588,18 @@ Markdown only, no preamble."""
 async def process_finnhub(raw_path: Path) -> None:
     """Route Finnhub quote/news/recommendation payloads."""
     try:
-        with open(raw_path, "r") as f:
+        with open(raw_path) as f:
             data = json.load(f)
         symbol = data.get("symbol")
         endpoint = data.get("endpoint", "")
         if not symbol:
             return
 
+        # Support both the new RawPayload envelope and the old flat shape.
+        inner = data.get("payload") if isinstance(data.get("payload"), dict) else data
+
         if endpoint == "quote":
-            body = data.get("quote", {})
+            body = inner.get("quote", {})
             prompt_body = json.dumps(body, indent=2)
             ask = (
                 "Summarise the latest Finnhub quote in 3-5 bullets: current price, "
@@ -598,7 +607,7 @@ async def process_finnhub(raw_path: Path) -> None:
                 "trading above or below the previous close."
             )
         elif endpoint == "company-news":
-            articles = data.get("articles", [])[:12]
+            articles = inner.get("articles", [])[:12]
             prompt_body = json.dumps(articles, indent=2, default=str)
             ask = (
                 "Summarise the last week's news for this ticker in 4-6 bullet "
@@ -606,7 +615,7 @@ async def process_finnhub(raw_path: Path) -> None:
                 "Cite the most important 1-2 headlines by source."
             )
         else:
-            body = data.get("trends", [])
+            body = inner.get("trends", [])
             prompt_body = json.dumps(body, indent=2, default=str)
             ask = (
                 "Summarise analyst recommendation trends over the past months. "
@@ -614,9 +623,7 @@ async def process_finnhub(raw_path: Path) -> None:
                 "latest period and note any clear shift vs the earlier period."
             )
 
-        prompt = (
-            f"{ask}\n\nDATA:\n{prompt_body}\n\nMarkdown only, ~120 words."
-        )
+        prompt = f"{ask}\n\nDATA:\n{prompt_body}\n\nMarkdown only, ~120 words."
         gemini = _get_gemini_model()
         response = await gemini.generate_content_async(prompt)
         analysis = response.text.strip()
@@ -634,7 +641,7 @@ async def process_finnhub(raw_path: Path) -> None:
         section = (
             f"\n{section_header}\n\n{analysis}\n\n"
             f"> Source: Finnhub, fetched "
-            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
         )
         if section_header in existing:
             pattern = rf"{re.escape(section_header)}.*?(?=\n## |\n> Last updated:|\Z)"
@@ -729,25 +736,25 @@ async def _update_wiki_index(message: str) -> None:
     """Update the wiki index with a new entry."""
     try:
         index_path = Path(settings.WIKI_DIR) / "index.md"
-        
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         entry = f"- {timestamp}: {message}\n"
-        
+
         if index_path.exists():
             content = index_path.read_text()
             # Insert new entry after the header
-            lines = content.split('\n')
+            lines = content.split("\n")
             header_end = 0
             for i, line in enumerate(lines):
-                if line.startswith('#') or line.startswith('---'):
+                if line.startswith("#") or line.startswith("---"):
                     header_end = i + 1
-            
+
             lines.insert(header_end, entry.strip())
-            new_content = '\n'.join(lines)
+            new_content = "\n".join(lines)
         else:
             new_content = f"# Wiki Index\n\n{entry}"
-        
+
         await _awrite_wiki_file(index_path, new_content)
-        
+
     except Exception as e:
         logger.error(f"[WikiIngest] Error updating index: {e}")

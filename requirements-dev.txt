@@ -1,0 +1,14 @@
+# Dev-only tooling. Installed on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# See pyproject.toml for ruff/mypy configuration and .pre-commit-config.yaml
+# for the hook wiring.
+
+ruff==0.6.9
+mypy==1.11.2
+pre-commit==3.8.0
+
+# Type stubs for libraries we actually import. mypy needs these to produce
+# meaningful errors on yaml / requests / aiofiles call sites.
+types-PyYAML==6.0.12.20240917
+types-requests==2.32.0.20240914
+types-aiofiles==24.1.0.20240626

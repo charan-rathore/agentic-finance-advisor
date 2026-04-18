@@ -1,0 +1,131 @@
+# Ruff + mypy configuration. Install dev deps with:
+#   pip install -r requirements-dev.txt
+# and wire into git hooks with:
+#   pre-commit install
+#
+# The intent here is "catch real bugs early", not "re-write the whole codebase".
+# Rule selection is intentionally conservative so existing code passes.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Legacy modules are reference-only (see legacy/LEGACY.md); they deliberately
+# keep their v1 style and do not need to conform to v3 lint rules.
+extend-exclude = [
+    "legacy",
+    "data",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Start small: pyflakes (F) + pycodestyle errors (E) + basic bugbear (B) +
+# import ordering (I) + pyupgrade (UP). Adding more rules later is cheap;
+# turning them off after the fact is not.
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = [
+    "E501",   # line too long — handled by formatter, not worth enforcing hard
+    "B008",   # function call in default arg — common in FastAPI/Pydantic
+    "UP007",  # `X | None` vs `Optional[X]` — stay readable, don't mass-rewrite
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally re-import modules and use fixtures in ways that trip a
+# few rules; the value isn't worth the noise.
+"tests/**/*.py" = ["E402", "F401", "F811", "B018"]
+# The plan docs live at repo root and aren't Python; just in case a future
+# script ends up there, allow top-level imports after docstrings.
+"scripts/**/*.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+# Keep the type-checking surface pragmatic: we don't want to type-stamp the
+# whole codebase in one pass. `ignore_missing_imports` lets us avoid hunting
+# stubs for every third-party package we touch.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+# Off by default — flip these on per-module once the codebase is ready.
+check_untyped_defs = false
+disallow_untyped_defs = false
+# Legacy modules are reference-only; don't gate CI on them.
+exclude = [
+    "^legacy/",
+    "^data/",
+    "^\\.venv/",
+    "^venv/",
+    "^build/",
+    "^dist/",
+]
+
+[[tool.mypy.overrides]]
+# Third-party libs without great type info — skip deep checking so the signal
+# stays high on our own code.
+module = [
+    "yfinance.*",
+    "feedparser.*",
+    "praw.*",
+    "fredapi.*",
+    "google.generativeai.*",
+    "streamlit.*",
+    "textblob.*",
+    "bs4.*",
+    "sec_edgar_downloader.*",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# core/fetchers.py has heavy third-party integration (pandas, yfinance, praw,
+# fredapi) that makes clean typing expensive. These functions are covered by
+# functional tests and the data transformation is straightforward. Defer deep
+# typing until the higher-value modules are clean.
+module = "core.fetchers"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# core/wiki.py has complex dict manipulation (YAML frontmatter parsing, nested
+# snapshot dicts) and integrates with Gemini. The business logic is well-tested
+# via the new wiki health tests. Focus mypy energy on the newer, cleaner modules.
+module = "core.wiki"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# core/fetch_state.py is a thin SQLAlchemy wrapper. The ORM runtime semantics
+# (Column vs. attribute assignment) don't map cleanly to mypy's static analysis.
+# This module has dedicated unit tests that cover the business logic.
+module = "core.fetch_state"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# core/trust.py — same shape as core/fetch_state.py: a thin SQLAlchemy wrapper
+# (SourceRegistry / KnowledgeVersion upserts) plus an httpx reachability
+# probe. ORM Column-vs-attribute assignment trips mypy here for the same
+# reason. Covered by tests/test_trust.py (29 tests) + tests/test_trust_models.py.
+module = "core.trust"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# agents/* interact heavily with SQLAlchemy ORM which has complex runtime semantics.
+# The business logic is well-tested; defer deep typing until the core modules
+# are fully clean.
+module = "agents.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Modules with clean type checking — enable strict mode to prevent regressions.
+module = [
+    "core.models", 
+    "core.sec_client", 
+    "core.wiki_ingest", 
+    "ui.*"
+]
+disallow_untyped_defs = true

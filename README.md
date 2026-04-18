@@ -53,9 +53,28 @@ Three specialized agents communicate via async message queues, with a persistent
 
 | Agent | Responsibility |
 | --- | --- |
-| **Ingest Agent** | Fetches stock prices (yfinance) and news (RSS/feedparser) on a schedule |
-| **Analysis Agent** | Sentiment analysis (TextBlob) + LLM Wiki maintenance + Gemini insights |
-| **Storage Agent** | Persists insights to SQLite; serves data to the UI |
+| **Ingest Agent** | Fetches prices (yfinance), news (RSS), and — when keys are present — SEC EDGAR, FRED, Alpha Vantage, Finnhub. Each heavy source is throttled via `FetchRun` cadences persisted in SQLite and hard-timeboxed so one wedged API cannot stall the loop. |
+| **Analysis Agent** | Sentiment analysis (TextBlob) + LLM Wiki maintenance + Gemini insights + beginner-mode onboarding. |
+| **Storage Agent** | Persists insights, market snapshots, news articles, and fetch-run state to SQLite; serves data to the UI. |
+
+## Data sources
+
+| Source | Required? | Provides | Free-tier limit |
+| --- | --- | --- | --- |
+| yfinance (Yahoo Finance) | **Required** | Intraday price + volume per symbol | Unlimited (no key) |
+| RSS (Google News per-symbol) | **Required** | Headlines + summaries | Unlimited (no key) |
+| Google Gemini | **Required** | LLM synthesis of the wiki + Q&A | 1 M tokens/day |
+| SEC EDGAR (`core/sec_client.py`) | Optional | `companyfacts` XBRL (revenue, assets, liabilities, cash) | 10 req/s (just set `SEC_USER_AGENT`) |
+| FRED (`FRED_API_KEY`) | Optional | Macro series (CPI, UNRATE, FEDFUNDS, GDP, 10Y, mortgage) | 120 req/min |
+| Alpha Vantage (`ALPHA_VANTAGE_API_KEY`) | Optional | `GLOBAL_QUOTE`, `OVERVIEW`, `INCOME_STATEMENT` | 25 req/day, 5 req/min |
+| Finnhub (`FINNHUB_API_KEY`) | Optional | Real-time quote, per-company news, recommendation trends | 60 req/min |
+| Reddit (`REDDIT_CLIENT_*`) | Optional | Community sentiment from r/stocks, r/investing | 60 req/min |
+
+The agent **runs cleanly when any optional source is missing** — each fetcher
+short-circuits and logs a warning, the ingest loop moves on. All payloads land
+in `data/raw/` wrapped in the canonical envelope defined by
+`core/schemas.RawPayload` (`source`, `endpoint`, `symbol`, `fetched_at`, `url`,
+`request_hash`, `status`, `payload`).
 
 ## Tech Stack
 
@@ -127,8 +146,15 @@ data/
 │   ├── overview.md      # Rolling market synthesis
 │   ├── log.md           # Append-only operation log
 │   ├── stocks/          # Per-symbol entity pages (AAPL.md, MSFT.md, ...)
-│   ├── concepts/        # Cross-stock theme pages
+│   ├── concepts/        # Cross-stock theme pages (incl. `finance_basics.md`)
 │   └── insights/        # Filed query answers (good answers compound the wiki)
+├── raw/                 # Raw API payloads (envelope-wrapped via core/schemas.py)
+│   ├── finnhub/         # Finnhub quote/news/recommendation JSON
+│   ├── alpha_vantage/   # Alpha Vantage quote/overview/income JSON
+│   ├── sec/             # SEC EDGAR companyfacts JSON
+│   └── (other sources)
+├── reference/
+│   └── companies.yaml   # Per-ticker risk profile + wiki cross-refs (17 tickers)
 └── finance.db           # SQLite database file (auto-created)
 
 ui/              # Streamlit dashboard
@@ -180,6 +206,39 @@ The knowledge base has three main operations:
    - Suggests missing cross-references
    - Self-audits knowledge base integrity
 
+## Operational tooling
+
+- `python scripts/dedupe_sec_raw.py [--apply]` — SHA-256 dedupe for
+  `data/raw/sec/`. Dry-run by default; useful if the content-hash short-circuit
+  in `core/sec_client.py` ever regresses.
+- **Dev setup (ruff + mypy + pre-commit):** see `docs/DEV.md`. TL;DR
+  `pip install -r requirements-dev.txt && pre-commit install`.
+- `python scripts/run_data_fetch_once.py` — one-shot harness that calls every
+  data source once and prints a status table. Every source is wrapped in an
+  individual `asyncio.wait_for(...)` so one wedged API cannot hang the script.
+  Flags: `--only finnhub,fred_macro`, `--symbols AAPL,MSFT`, `--timeout 30`.
+- `python scripts/smoke_new_fetchers.py` — smoke-test the Finnhub and Alpha
+  Vantage clients against the live APIs.
+- `core/fetch_state.py` — SQLite-backed fetch cadence tracker (`fetch_runs`
+  table). Restarts no longer re-hammer every API; the ingest loop queries
+  `should_fetch(source, key, interval_hours=N)` before each heavy call.
+- `core/schemas.RawPayload` — canonical envelope enforced by the Alpha Vantage
+  and Finnhub clients. `wiki_ingest` understands both the new envelope and
+  legacy flat payloads already on disk.
+
+## Safety against stalled fetches
+
+Every slow data source is wrapped in two concentric timeouts:
+
+1. Per-HTTP-request: each client sets `httpx.AsyncClient(timeout=30.0)` and
+   uses `tenacity` with `stop_after_attempt(3)` for retries.
+2. Per-source in the ingest loop: `agents.ingest_agent._guarded(...)` uses
+   `asyncio.wait_for(coro, timeout=_HEAVY_FETCH_TIMEOUT_SECONDS)` so one wedged
+   API cannot block the 5-minute ingest cycle for more than 3 minutes.
+
+If a fetch times out, `FetchRun.last_error` is set to `timeout_or_exception`
+and the next cycle will try again after the configured interval.
+
 ## Future Improvements
 
 - [ ] Swap async queues for Apache Kafka for distributed deployment
@@ -191,4 +250,9 @@ The knowledge base has three main operations:
 
 ## Legacy folders
 
-Directories such as `api/`, `db/models/` (old ORM), `frontend/`, `rag/`, and `alembic/versions/` are kept from an earlier skeleton; their Python modules are stubbed with `DEPRECATED in v2` notes pointing to the v2 layout above. See `multi-agent-finance-cursor-plan-v2.md`.
+Everything carried over from the pre-v3 skeleton lives under `legacy/` —
+`legacy/api/`, `legacy/db/`, `legacy/frontend/`, `legacy/rag/`,
+`legacy/alembic/`, plus the deprecated stub agents (budget/expense/fraud/…)
+moved out of `agents/`. See `legacy/LEGACY.md` for a file-by-file map of what
+replaced each module in v3. Nothing in `core/`, `agents/{ingest,analysis,storage}_agent.py`,
+`ui/app.py`, or `main.py` imports from `legacy/`.

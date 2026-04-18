@@ -21,20 +21,25 @@ This agent does NOT call Gemini or do any analysis.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import feedparser
 import yfinance as yf
 from loguru import logger
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from core.alpha_vantage_client import fetch_alpha_vantage_for_symbols
+from core.fetch_state import record_failure, record_success, should_fetch
 from core.fetchers import fetch_macro_indicators
 from core.finnhub_client import fetch_finnhub_for_symbols
 from core.models import MarketSnapshot, NewsArticle, init_db
 from core.queues import raw_market_queue, raw_news_queue
 from core.sec_client import fetch_financial_data_for_symbols
 from core.settings import settings
+
+# Hard ceiling for any single slow-source fetch block. Belt-and-suspenders on
+# top of per-client timeouts so one wedged API can never stall the ingest loop.
+_HEAVY_FETCH_TIMEOUT_SECONDS = 180.0
 
 
 def _yf_snapshot(symbol: str) -> dict | None:
@@ -78,13 +83,13 @@ def _yf_snapshot(symbol: str) -> dict | None:
         "symbol": symbol,
         "price": round(float(price), 2),
         "volume": round(volume, 0),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "source": "yfinance",
-        "market_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "market_time": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     }
 
 
-async def fetch_market_data(engine) -> list[dict]:
+async def fetch_market_data(engine: object) -> list[dict]:  # engine: sqlalchemy.Engine
     """
     Fetch current stock prices using yfinance.
 
@@ -99,7 +104,9 @@ async def fetch_market_data(engine) -> list[dict]:
         try:
             snap = await loop.run_in_executor(None, _yf_snapshot, symbol)
             if snap is None:
-                logger.warning(f"[Ingest] No price data for {symbol} (market closed or rate-limited)")
+                logger.warning(
+                    f"[Ingest] No price data for {symbol} (market closed or rate-limited)"
+                )
                 continue
 
             results.append(snap)
@@ -110,7 +117,7 @@ async def fetch_market_data(engine) -> list[dict]:
                         symbol=snap["symbol"],
                         price=snap["price"],
                         volume=snap["volume"],
-                        captured_at=datetime.now(timezone.utc),
+                        captured_at=datetime.now(UTC),
                     )
                 )
                 session.commit()
@@ -140,7 +147,7 @@ def _default_news_feeds() -> list[str]:
     ]
 
 
-async def fetch_news(engine) -> list[dict]:
+async def fetch_news(engine: object) -> list[dict]:  # engine: sqlalchemy.Engine
     """
     Fetch news from RSS feeds using feedparser.
     Free, no API key, public feeds.
@@ -153,9 +160,7 @@ async def fetch_news(engine) -> list[dict]:
             feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
 
             if feed.bozo and not feed.entries:
-                logger.warning(
-                    f"[Ingest] Malformed/empty feed, skipping: {feed_url[:80]}"
-                )
+                logger.warning(f"[Ingest] Malformed/empty feed, skipping: {feed_url[:80]}")
                 continue
 
             feed_source = feed.feed.get("title", feed_url) if hasattr(feed, "feed") else feed_url
@@ -165,9 +170,7 @@ async def fetch_news(engine) -> list[dict]:
                     "headline": entry.get("title", ""),
                     "url": entry.get("link", ""),
                     "body": entry.get("summary", ""),
-                    "published_at": entry.get(
-                        "published", datetime.now(timezone.utc).isoformat()
-                    ),
+                    "published_at": entry.get("published", datetime.now(UTC).isoformat()),
                     "source": feed_source,
                 }
                 articles.append(article)
@@ -179,14 +182,12 @@ async def fetch_news(engine) -> list[dict]:
                             url=article["url"],
                             body=article["body"],
                             source=article["source"],
-                            ingested_at=datetime.now(timezone.utc),
+                            ingested_at=datetime.now(UTC),
                         )
                     )
                     session.commit()
 
-            logger.info(
-                f"[Ingest] {len(feed.entries[:15])} articles from {feed_url[:80]}"
-            )
+            logger.info(f"[Ingest] {len(feed.entries[:15])} articles from {feed_url[:80]}")
 
         except Exception as e:
             logger.error(f"[Ingest] Error fetching feed {feed_url}: {e}")
@@ -209,6 +210,23 @@ async def fetch_sec_data() -> list[dict]:
         return []
 
 
+async def _guarded(
+    coro: object, *, label: str, timeout: float = _HEAVY_FETCH_TIMEOUT_SECONDS
+) -> object:
+    """
+    Run `coro` but never let it block the ingest loop for more than `timeout`
+    seconds. Logs + returns `None` on timeout or exception so one wedged API
+    cannot stall the whole agent.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except TimeoutError:
+        logger.error(f"[Ingest Agent] {label} timed out after {timeout}s — skipping")
+    except Exception as e:
+        logger.error(f"[Ingest Agent] {label} failed: {e}")
+    return None
+
+
 async def run() -> None:
     """
     Main ingest loop.
@@ -220,23 +238,14 @@ async def run() -> None:
       - SEC EDGAR company facts:                every SEC_FETCH_INTERVAL_HOURS
       - FRED macro indicators:                  every MACRO_FETCH_INTERVAL_HOURS
 
-    Each heavy source tracks its own last-success timestamp in-memory; the
-    PROJECT_TODO P2 item "persist fetch state in SQLite" upgrades this later.
+    Cadences are persisted in SQLite (`fetch_runs` table, see
+    `core/fetch_state.py`) so restarts don't re-hammer every API. Every heavy
+    fetch is wrapped in `_guarded(...)` with a hard timeout so one wedged
+    upstream cannot stall the loop.
     """
-    import time
-
     logger.info("[Ingest Agent] Starting...")
     engine = init_db(settings.DATABASE_URL)
-
-    last_finnhub = 0.0
-    last_alpha_vantage = 0.0
-    last_sec = 0.0
-    last_macro = 0.0
-
-    finnhub_gap = settings.FINNHUB_FETCH_INTERVAL_HOURS * 3600
-    alpha_vantage_gap = settings.ALPHA_VANTAGE_FETCH_INTERVAL_HOURS * 3600
-    sec_gap = settings.SEC_FETCH_INTERVAL_HOURS * 3600
-    macro_gap = settings.MACRO_FETCH_INTERVAL_HOURS * 3600
+    SessionLocal = sessionmaker(bind=engine)
 
     while True:
         logger.info("[Ingest Agent] Starting fetch cycle...")
@@ -252,68 +261,85 @@ async def run() -> None:
             await raw_news_queue.put(article)
         logger.info(f"[Ingest Agent] {len(articles)} news articles -> queue")
 
-        now = time.time()
-
-        # ── Finnhub (hourly by default) ─────────────────────────────────────
-        if settings.FINNHUB_API_KEY and now - last_finnhub > finnhub_gap:
-            logger.info("[Ingest Agent] Finnhub refresh...")
-            try:
-                await fetch_finnhub_for_symbols(settings.YFINANCE_SYMBOLS)
-                last_finnhub = now
-            except Exception as e:
-                logger.error(f"[Ingest Agent] Finnhub failed: {e}")
-
-        # ── Alpha Vantage (daily — 25 req/day limit) ────────────────────────
-        if settings.ALPHA_VANTAGE_API_KEY and now - last_alpha_vantage > alpha_vantage_gap:
-            logger.info("[Ingest Agent] Alpha Vantage refresh...")
-            try:
-                await fetch_alpha_vantage_for_symbols(
-                    settings.YFINANCE_SYMBOLS, max_symbols=3
+        with SessionLocal() as state_session:
+            # ── Finnhub (hourly by default) ─────────────────────────────────
+            if settings.FINNHUB_API_KEY and should_fetch(
+                state_session,
+                "finnhub",
+                interval_hours=settings.FINNHUB_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] Finnhub refresh...")
+                result = await _guarded(
+                    fetch_finnhub_for_symbols(settings.YFINANCE_SYMBOLS),
+                    label="Finnhub",
                 )
-                last_alpha_vantage = now
-            except Exception as e:
-                logger.error(f"[Ingest Agent] Alpha Vantage failed: {e}")
+                if result is not None:
+                    record_success(state_session, "finnhub")
+                else:
+                    record_failure(state_session, "finnhub", error="timeout_or_exception")
 
-        # ── SEC EDGAR company facts (daily) ─────────────────────────────────
-        if now - last_sec > sec_gap:
-            logger.info("[Ingest Agent] SEC refresh...")
-            try:
-                sec_data = await fetch_sec_data()
-                for company_data in sec_data:
-                    await raw_news_queue.put(
-                        {
-                            "headline": (
-                                f"SEC Financial Data Update: "
-                                f"{company_data.get('company_name', 'Unknown')}"
-                            ),
-                            "url": (
-                                "https://data.sec.gov/api/xbrl/companyfacts/"
-                                f"CIK{company_data.get('cik', '').zfill(10)}.json"
-                            ),
-                            "body": (
-                                f"Updated financial data for "
-                                f"{company_data.get('symbol', 'N/A')}"
-                            ),
-                            "published_at": company_data.get("fetched_at"),
-                            "source": "SEC EDGAR",
-                            "data_type": "sec_financial",
-                            "raw_data": company_data,
-                        }
-                    )
-                last_sec = now
-            except Exception as e:
-                logger.error(f"[Ingest Agent] SEC failed: {e}")
+            # ── Alpha Vantage (daily — 25 req/day limit) ────────────────────
+            if settings.ALPHA_VANTAGE_API_KEY and should_fetch(
+                state_session,
+                "alpha_vantage",
+                interval_hours=settings.ALPHA_VANTAGE_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] Alpha Vantage refresh...")
+                result = await _guarded(
+                    fetch_alpha_vantage_for_symbols(settings.YFINANCE_SYMBOLS, max_symbols=3),
+                    label="Alpha Vantage",
+                )
+                if result is not None:
+                    record_success(state_session, "alpha_vantage")
+                else:
+                    record_failure(state_session, "alpha_vantage", error="timeout_or_exception")
 
-        # ── FRED macro (daily) ──────────────────────────────────────────────
-        if settings.FRED_API_KEY and now - last_macro > macro_gap:
-            logger.info("[Ingest Agent] FRED macro refresh...")
-            try:
-                await fetch_macro_indicators()
-                last_macro = now
-            except Exception as e:
-                logger.error(f"[Ingest Agent] FRED failed: {e}")
+            # ── SEC EDGAR company facts (daily) ─────────────────────────────
+            if should_fetch(
+                state_session,
+                "sec",
+                interval_hours=settings.SEC_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] SEC refresh...")
+                sec_data = await _guarded(fetch_sec_data(), label="SEC")
+                if sec_data is not None:
+                    for company_data in sec_data:
+                        await raw_news_queue.put(
+                            {
+                                "headline": (
+                                    f"SEC Financial Data Update: "
+                                    f"{company_data.get('company_name', 'Unknown')}"
+                                ),
+                                "url": (
+                                    "https://data.sec.gov/api/xbrl/companyfacts/"
+                                    f"CIK{company_data.get('cik', '').zfill(10)}.json"
+                                ),
+                                "body": (
+                                    f"Updated financial data for "
+                                    f"{company_data.get('symbol', 'N/A')}"
+                                ),
+                                "published_at": company_data.get("fetched_at"),
+                                "source": "SEC EDGAR",
+                                "data_type": "sec_financial",
+                                "raw_data": company_data,
+                            }
+                        )
+                    record_success(state_session, "sec")
+                else:
+                    record_failure(state_session, "sec", error="timeout_or_exception")
 
-        logger.info(
-            f"[Ingest Agent] Cycle done. Sleeping {settings.INGEST_INTERVAL_SECONDS}s..."
-        )
+            # ── FRED macro (daily) ──────────────────────────────────────────
+            if settings.FRED_API_KEY and should_fetch(
+                state_session,
+                "fred",
+                interval_hours=settings.MACRO_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] FRED macro refresh...")
+                result = await _guarded(fetch_macro_indicators(), label="FRED")
+                if result is not None:
+                    record_success(state_session, "fred")
+                else:
+                    record_failure(state_session, "fred", error="timeout_or_exception")
+
+        logger.info(f"[Ingest Agent] Cycle done. Sleeping {settings.INGEST_INTERVAL_SECONDS}s...")
         await asyncio.sleep(settings.INGEST_INTERVAL_SECONDS)

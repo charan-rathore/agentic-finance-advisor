@@ -1,0 +1,597 @@
+Add a lightweight Trust Layer to the existing multi-agent finance project.
+This is purely additive — do NOT modify any existing logic in ingest_agent.py,
+storage_agent.py, queues.py, main.py, or the wiki ingest/fetch pipeline.
+Only extend what is listed below.
+
+════════════════════════════════════════════════════════
+STEP A — Add two new SQLite tables to core/models.py
+════════════════════════════════════════════════════════
+
+Append these two ORM classes to core/models.py (after the existing Insight class).
+Do not touch existing classes.
+
+class SourceRegistry(Base):
+    """
+    Tracks every external data source the system has fetched from.
+    One row per unique URL fetched. Upserted on every fetch cycle.
+    """
+    __tablename__ = "source_registry"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    url = Column(String(1000), nullable=False, unique=True, index=True)
+    domain = Column(String(200), nullable=False, index=True)
+    source_name = Column(String(200))          # e.g. "SEC EDGAR", "Yahoo Finance RSS"
+    source_type = Column(String(50))           # "sec_filing" | "rss_news" | "macro" | "reddit" | "price"
+    is_trusted = Column(Boolean, default=False) # passes domain whitelist check
+    is_reachable = Column(Boolean, default=True)
+    http_status = Column(Integer)              # last HTTP status code seen
+    first_fetched_at = Column(DateTime, default=datetime.utcnow)
+    last_fetched_at = Column(DateTime, default=datetime.utcnow)
+    fetch_count = Column(Integer, default=1)
+
+
+class KnowledgeVersion(Base):
+    """
+    Audit trail for every wiki page update.
+    One row per write to any data/wiki/*.md file.
+    Answers: what changed, when, and what source drove the change.
+    """
+    __tablename__ = "knowledge_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    page_name = Column(String(300), nullable=False, index=True)  # e.g. "stocks/AAPL.md"
+    version = Column(Integer, nullable=False)                     # monotonically increasing per page
+    changed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    change_summary = Column(Text)                                 # one sentence: what changed and why
+    source_urls = Column(Text)                                    # JSON list of source URLs that drove this update
+    source_types = Column(Text)                                   # JSON list matching source_urls
+    word_count_before = Column(Integer, default=0)
+    word_count_after = Column(Integer, nullable=False)
+    triggered_by = Column(String(100))                            # "ingest" | "lint" | "query" | "manual"
+
+Make sure init_db() picks these up automatically — it already calls Base.metadata.create_all()
+so no changes needed there. Just confirm both classes are defined before init_db is called.
+
+Also add this import at the top of core/models.py if not already present:
+  from sqlalchemy import Boolean
+
+════════════════════════════════════════════════════════
+STEP B — CREATE new file: core/trust.py
+════════════════════════════════════════════════════════
+
+This is the entire trust layer in one focused module.
+It has three responsibilities: source validation, source registration, knowledge versioning.
+
+"""
+core/trust.py
+
+Lightweight Trust Layer — source provenance, validation, and knowledge versioning.
+
+This module is purely additive infrastructure. It is called by core/wiki.py and
+core/fetchers.py to record what data came from where, whether sources are trustworthy,
+and to maintain a version history of every wiki page update.
+
+Nothing in this module modifies existing agent logic.
+"""
+
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+from loguru import logger
+import httpx
+from sqlalchemy.orm import Session
+
+from core.models import SourceRegistry, KnowledgeVersion
+
+
+# ── Trusted domain whitelist ──────────────────────────────────────────────────
+# Only sources from these domains pass validation.
+# Extend this list as you add new data sources.
+
+TRUSTED_DOMAINS: set[str] = {
+    # Market data
+    "finance.yahoo.com",
+    "query1.finance.yahoo.com",
+    "query2.finance.yahoo.com",
+    # SEC / Government
+    "sec.gov",
+    "data.sec.gov",
+    "efts.sec.gov",
+    # Federal Reserve
+    "fred.stlouisfed.org",
+    "api.stlouisfed.org",
+    # News
+    "reuters.com",
+    "bloomberg.com",
+    "wsj.com",
+    "ft.com",
+    "cnbc.com",
+    "marketwatch.com",
+    "news.google.com",
+    # Reddit
+    "reddit.com",
+    "www.reddit.com",
+    # CNN (Fear & Greed)
+    "production.dataviz.cnn.io",
+    "cnn.com",
+}
+
+
+# ── Source Validation ─────────────────────────────────────────────────────────
+
+def extract_domain(url: str) -> str:
+    """Extract the registered domain from a URL."""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.lower().lstrip("www.")
+    except Exception:
+        return ""
+
+
+def is_trusted_domain(url: str) -> bool:
+    """Check if the URL's domain is in the trusted whitelist."""
+    domain = extract_domain(url)
+    # Check exact match and parent domain match
+    return domain in TRUSTED_DOMAINS or any(
+        domain.endswith("." + trusted) or domain == trusted
+        for trusted in TRUSTED_DOMAINS
+    )
+
+
+def validate_source(url: str, timeout: float = 5.0) -> dict:
+    """
+    Validate a source URL: check domain trust + HTTP reachability.
+
+    Returns a dict with:
+      is_trusted: bool       — passes domain whitelist
+      is_reachable: bool     — HTTP request succeeded
+      http_status: int|None  — status code returned
+      domain: str            — extracted domain
+
+    Uses HEAD request first (cheap), falls back to GET if HEAD returns 405.
+    Never raises — all errors are caught and returned as is_reachable=False.
+    """
+    domain = extract_domain(url)
+    trusted = is_trusted_domain(url)
+    result = {
+        "url": url,
+        "domain": domain,
+        "is_trusted": trusted,
+        "is_reachable": False,
+        "http_status": None,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            try:
+                r = client.head(url)
+                result["http_status"] = r.status_code
+                result["is_reachable"] = r.status_code < 400
+            except Exception:
+                # HEAD failed — try GET with limited content
+                r = client.get(url, headers={"Range": "bytes=0-0"})
+                result["http_status"] = r.status_code
+                result["is_reachable"] = r.status_code < 400
+    except Exception as e:
+        logger.debug(f"[Trust] Reachability check failed for {url}: {e}")
+
+    return result
+
+
+# ── Source Registry ───────────────────────────────────────────────────────────
+
+def register_source(
+    engine,
+    url: str,
+    source_name: str,
+    source_type: str,
+    validation_result: dict | None = None,
+) -> None:
+    """
+    Upsert a source into the source_registry table.
+
+    If the URL already exists: increment fetch_count, update last_fetched_at
+    and any new validation results.
+    If new: create a full record including trust/reachability status.
+
+    Call this from core/fetchers.py after every successful data fetch.
+    """
+    if validation_result is None:
+        validation_result = {
+            "domain": extract_domain(url),
+            "is_trusted": is_trusted_domain(url),
+            "is_reachable": True,
+            "http_status": 200,
+        }
+
+    with Session(engine) as session:
+        existing = session.query(SourceRegistry).filter_by(url=url).first()
+        now = datetime.now(timezone.utc)
+
+        if existing:
+            existing.last_fetched_at = now
+            existing.fetch_count = (existing.fetch_count or 0) + 1
+            existing.is_reachable = validation_result.get("is_reachable", True)
+            existing.http_status = validation_result.get("http_status")
+            existing.is_trusted = validation_result.get("is_trusted", False)
+        else:
+            record = SourceRegistry(
+                url=url,
+                domain=validation_result.get("domain", extract_domain(url)),
+                source_name=source_name,
+                source_type=source_type,
+                is_trusted=validation_result.get("is_trusted", False),
+                is_reachable=validation_result.get("is_reachable", True),
+                http_status=validation_result.get("http_status"),
+                first_fetched_at=now,
+                last_fetched_at=now,
+                fetch_count=1,
+            )
+            session.add(record)
+
+        session.commit()
+        logger.debug(f"[Trust] Registered source: {url} (trusted={validation_result.get('is_trusted')})")
+
+
+# ── Knowledge Versioning ──────────────────────────────────────────────────────
+
+def record_wiki_version(
+    engine,
+    page_name: str,
+    new_content: str,
+    old_content: str,
+    change_summary: str,
+    source_urls: list[str],
+    source_types: list[str],
+    triggered_by: str = "ingest",
+) -> int:
+    """
+    Record a new version entry whenever a wiki page is written.
+
+    Computes the next version number for the page (max existing + 1).
+    Stores word counts before/after so growth of the knowledge base
+    is measurable over time.
+
+    Returns the new version number.
+    """
+    with Session(engine) as session:
+        last = (
+            session.query(KnowledgeVersion)
+            .filter_by(page_name=page_name)
+            .order_by(KnowledgeVersion.version.desc())
+            .first()
+        )
+        next_version = (last.version + 1) if last else 1
+
+        entry = KnowledgeVersion(
+            page_name=page_name,
+            version=next_version,
+            changed_at=datetime.now(timezone.utc),
+            change_summary=change_summary,
+            source_urls=json.dumps(source_urls),
+            source_types=json.dumps(source_types),
+            word_count_before=len(old_content.split()) if old_content else 0,
+            word_count_after=len(new_content.split()),
+            triggered_by=triggered_by,
+        )
+        session.add(entry)
+        session.commit()
+        logger.debug(f"[Trust] Versioned {page_name} → v{next_version} ({triggered_by})")
+        return next_version
+
+
+def get_page_version_history(engine, page_name: str) -> list[dict]:
+    """
+    Return the full version history for a wiki page, newest first.
+    Used by the UI Sources & History page.
+    """
+    with Session(engine) as session:
+        rows = (
+            session.query(KnowledgeVersion)
+            .filter_by(page_name=page_name)
+            .order_by(KnowledgeVersion.version.desc())
+            .all()
+        )
+        return [
+            {
+                "page": r.page_name,
+                "version": r.version,
+                "changed_at": r.changed_at,
+                "change_summary": r.change_summary,
+                "source_urls": json.loads(r.source_urls or "[]"),
+                "source_types": json.loads(r.source_types or "[]"),
+                "word_count_before": r.word_count_before,
+                "word_count_after": r.word_count_after,
+                "triggered_by": r.triggered_by,
+            }
+            for r in rows
+        ]
+
+
+def get_all_sources(engine) -> list[dict]:
+    """
+    Return all registered sources for the UI Sources & History page.
+    Sorted by last_fetched_at descending.
+    """
+    with Session(engine) as session:
+        rows = (
+            session.query(SourceRegistry)
+            .order_by(SourceRegistry.last_fetched_at.desc())
+            .all()
+        )
+        return [
+            {
+                "url": r.url,
+                "domain": r.domain,
+                "source_name": r.source_name,
+                "source_type": r.source_type,
+                "is_trusted": r.is_trusted,
+                "is_reachable": r.is_reachable,
+                "http_status": r.http_status,
+                "first_fetched_at": r.first_fetched_at,
+                "last_fetched_at": r.last_fetched_at,
+                "fetch_count": r.fetch_count,
+            }
+            for r in rows
+        ]
+
+════════════════════════════════════════════════════════
+STEP C — UPDATE core/wiki.py (surgical, minimal edits only)
+════════════════════════════════════════════════════════
+
+Make exactly these two changes to core/wiki.py. Touch nothing else.
+
+CHANGE 1 — Update _write_wiki_file() to call record_wiki_version():
+
+Replace the existing _write_wiki_file() function with this version:
+
+def _write_wiki_file(
+    rel_path: str,
+    content: str,
+    engine=None,
+    change_summary: str = "wiki update",
+    source_urls: list[str] | None = None,
+    source_types: list[str] | None = None,
+    triggered_by: str = "ingest",
+) -> None:
+    """
+    Write a wiki file and record a version entry if engine is provided.
+    All existing callers that pass only (rel_path, content) continue to work
+    because all new parameters have defaults — fully backward compatible.
+    """
+    p = _wiki_path(rel_path)
+    old_content = p.read_text(encoding="utf-8") if p.exists() else ""
+    p.write_text(content, encoding="utf-8")
+    logger.debug(f"[Wiki] Wrote {rel_path} ({len(content)} chars)")
+
+    if engine is not None:
+        from core.trust import record_wiki_version
+        record_wiki_version(
+            engine=engine,
+            page_name=rel_path,
+            new_content=content,
+            old_content=old_content,
+            change_summary=change_summary,
+            source_urls=source_urls or [],
+            source_types=source_types or [],
+            triggered_by=triggered_by,
+        )
+
+CHANGE 2 — Update the insight output format in query_wiki():
+
+In query_wiki(), after the answer is generated, replace the plain insight_page
+string with this structured format:
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
+    utc_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Confidence rubric (honest and explainable):
+    # Start at 1.0, deduct for each trust signal failure:
+    #   -0.15 if any consulted page is marked stale: true in frontmatter
+    #   -0.20 if fewer than 2 distinct source_types contributed
+    #   -0.10 if newest wiki page consulted is older than 24 hours
+    # Floor at 0.30. This rubric is documented here so it can be explained in interviews.
+    confidence = _compute_confidence(consulted)
+
+    insight_page = f"""---
+page_type: insight
+generated_at: {utc_label}
+question: "{question[:120]}"
+pages_consulted: {json.dumps(consulted)}
+confidence_score: {confidence}
+confidence_rubric: "stale_penalty=-0.15/page, source_diversity_penalty=-0.20, recency_penalty=-0.10"
+---
+
+# Insight: {question[:80]}
+
+## Answer
+{answer}
+
+## Reasoning
+*This insight was derived from {len(consulted)} wiki pages: {", ".join(f"`{p}`" for p in consulted)}.*
+*Confidence score: {confidence:.2f} — see frontmatter for rubric.*
+
+## Sources Consulted
+{chr(10).join(f"- `{p}`" for p in consulted)}
+
+## Trust Signals
+- Pages consulted: {len(consulted)}
+- Confidence score: {confidence:.2f}
+- Generated: {utc_label}
+- Any stale pages in context: {_any_stale(consulted)}
+
+---
+*Last updated: {utc_label}*
+"""
+
+Also add these two helper functions to core/wiki.py (private, used only by query_wiki):
+
+def _compute_confidence(consulted_pages: list[str]) -> float:
+    """
+    Honest, explainable confidence score based on three observable signals.
+    Documented in code so it can be explained clearly in interviews.
+    """
+    import yaml as _yaml
+    from datetime import timezone as _tz
+
+    score = 1.0
+    source_types_seen = set()
+    now = datetime.now(timezone.utc)
+
+    for page in consulted_pages:
+        content = _read_wiki_file(page)
+        if not content:
+            continue
+
+        # Parse YAML frontmatter if present
+        if content.startswith("---"):
+            try:
+                fm_text = content.split("---")[1]
+                fm = _yaml.safe_load(fm_text) or {}
+            except Exception:
+                fm = {}
+        else:
+            fm = {}
+
+        # Stale penalty
+        if fm.get("stale") is True:
+            score -= 0.15
+
+        # Source type diversity
+        for st in fm.get("data_sources", []):
+            source_types_seen.add(st)
+
+        # Recency penalty
+        lu = fm.get("last_updated")
+        if lu:
+            try:
+                if isinstance(lu, str):
+                    lu_dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                else:
+                    lu_dt = lu.replace(tzinfo=timezone.utc) if lu.tzinfo is None else lu
+                age_hours = (now - lu_dt).total_seconds() / 3600
+                if age_hours > 24:
+                    score -= 0.10
+            except Exception:
+                pass
+
+    if len(source_types_seen) < 2:
+        score -= 0.20
+
+    return round(max(score, 0.30), 2)
+
+
+def _any_stale(consulted_pages: list[str]) -> str:
+    """Return 'yes' if any consulted page has stale:true in frontmatter, else 'no'."""
+    import yaml as _yaml
+    for page in consulted_pages:
+        content = _read_wiki_file(page)
+        if content and content.startswith("---"):
+            try:
+                fm = _yaml.safe_load(content.split("---")[1]) or {}
+                if fm.get("stale") is True:
+                    return "yes"
+            except Exception:
+                pass
+    return "no"
+
+════════════════════════════════════════════════════════
+STEP D — UPDATE core/fetchers.py (surgical, additive only)
+════════════════════════════════════════════════════════
+
+In core/fetchers.py, at the top of each fetch function, add source registration.
+This is a 3-line addition per function. Do not change any existing fetch logic.
+
+Pattern to add at the START of each fetch function body (after the existing setup):
+
+    from core.trust import validate_source, register_source
+    from core.models import init_db
+    from core.settings import settings as _settings
+    _engine = init_db(_settings.DATABASE_URL)
+
+Then after each URL is determined (before or after the actual fetch, doesn't matter):
+
+    validation = validate_source(url)
+    register_source(
+        engine=_engine,
+        url=url,
+        source_name="<human readable name for this source>",
+        source_type="<sec_filing|rss_news|macro|reddit|price|sentiment>",
+        validation_result=validation,
+    )
+
+    # If source is not trusted, log a warning and skip it
+    if not validation["is_trusted"]:
+        logger.warning(f"[Trust] Untrusted source skipped: {url}")
+        continue  # or return [] if not in a loop
+
+Apply this pattern to: fetch_sec_filings, fetch_macro_indicators,
+fetch_reddit_sentiment, fetch_google_news_rss, fetch_vix_and_fear_greed.
+
+Also add pyyaml to requirements.txt if not already present:
+  pyyaml==6.0.1
+
+════════════════════════════════════════════════════════
+STEP E — ADD Sources & History page to Streamlit UI
+════════════════════════════════════════════════════════
+
+In ui/app.py, add a new tab or sidebar page called "Sources & History".
+Do not change the existing dashboard page. Add this as a new section only.
+
+The page has two sections:
+
+SECTION 1 — Source Registry
+Title: "📡 Data Sources"
+Show a table with columns: Source Name | Domain | Type | Trusted | Reachable | Last Fetched | Fetch Count
+Color-code the Trusted column: green checkmark if True, red X if False
+Color-code the Reachable column: same pattern
+Add a summary line above the table:
+  f"{trusted_count} trusted sources | {total_count} total | last fetch: {most_recent}"
+
+SECTION 2 — Knowledge Version History
+Title: "📚 Wiki Version History"
+Add a selectbox: "Select wiki page" populated from all distinct page_name values in knowledge_versions table
+When a page is selected, show its version history as a table:
+  Version | Changed At | Triggered By | Change Summary | Word Count | Sources Used
+Add a simple line chart showing word_count_after over versions for the selected page
+  (this visualises how the knowledge base grows over time — a compelling demo visual)
+
+Use only Streamlit native components (st.dataframe, st.selectbox, st.line_chart).
+No external charting libraries.
+
+To query the DB from the UI, import and call:
+  from core.trust import get_all_sources, get_page_version_history
+  from core.models import init_db
+  from core.settings import settings
+  engine = init_db(settings.DATABASE_URL)
+
+════════════════════════════════════════════════════════
+STEP F — Verification
+════════════════════════════════════════════════════════
+
+After all changes, run:
+
+  python -c "
+from core.models import init_db
+from core.settings import settings
+engine = init_db(settings.DATABASE_URL)
+from sqlalchemy import inspect
+tables = inspect(engine).get_table_names()
+assert 'source_registry' in tables, 'MISSING: source_registry'
+assert 'knowledge_versions' in tables, 'MISSING: knowledge_versions'
+print('DB tables OK:', tables)
+"
+
+  python -c "from core.trust import validate_source, register_source, record_wiki_version, get_all_sources, get_page_version_history; print('trust module OK')"
+
+  python -c "from core.wiki import _compute_confidence, _any_stale; print('confidence helpers OK')"
+
+  python -c "import yaml; print('pyyaml OK')"
+
+Report every file modified, confirm all four checks pass, and flag any
+import conflicts or circular dependency issues found.
+
+DO NOT TOUCH: agents/ingest_agent.py, agents/storage_agent.py,
+core/queues.py, main.py, docker-compose.yml, Dockerfile, tests/

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +33,13 @@ import httpx
 from loguru import logger
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
+from core.schemas import RawPayload
 from core.settings import settings
-
 
 _BASE = "https://www.alphavantage.co/query"
 _MIN_INTERVAL_SECONDS = 13.0
@@ -87,7 +87,7 @@ class AlphaVantageClient:
         return data
 
     async def _save(self, name: str, data: dict) -> Path:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         path = self.raw_dir / f"{name}_{ts}.json"
         async with aiofiles.open(path, "w") as f:
             await f.write(json.dumps(data, indent=2, default=str))
@@ -98,49 +98,52 @@ class AlphaVantageClient:
         data = await self._get({"function": "GLOBAL_QUOTE", "symbol": symbol})
         if not data or not data.get("Global Quote"):
             return None
-        payload = {
-            "symbol": symbol,
-            "source": "alpha_vantage",
-            "endpoint": "GLOBAL_QUOTE",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "quote": data["Global Quote"],
-        }
-        return await self._save(f"alphavantage_quote_{symbol}", payload)
+        envelope = RawPayload.build(
+            source="alpha_vantage",
+            endpoint="GLOBAL_QUOTE",
+            symbol=symbol,
+            url=_BASE,
+            params={"function": "GLOBAL_QUOTE", "symbol": symbol},
+            payload={"quote": data["Global Quote"]},
+        )
+        return await self._save(f"alphavantage_quote_{symbol}", envelope.to_json_dict())
 
     async def overview(self, symbol: str) -> Path | None:
         data = await self._get({"function": "OVERVIEW", "symbol": symbol})
         if not data or "Symbol" not in data:
             return None
-        payload = {
-            "symbol": symbol,
-            "source": "alpha_vantage",
-            "endpoint": "OVERVIEW",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "overview": data,
-        }
-        return await self._save(f"alphavantage_overview_{symbol}", payload)
+        envelope = RawPayload.build(
+            source="alpha_vantage",
+            endpoint="OVERVIEW",
+            symbol=symbol,
+            url=_BASE,
+            params={"function": "OVERVIEW", "symbol": symbol},
+            payload={"overview": data},
+        )
+        return await self._save(f"alphavantage_overview_{symbol}", envelope.to_json_dict())
 
     async def income_statement(self, symbol: str) -> Path | None:
         data = await self._get({"function": "INCOME_STATEMENT", "symbol": symbol})
         if not data or "symbol" not in data:
             return None
-        payload = {
-            "symbol": symbol,
-            "source": "alpha_vantage",
-            "endpoint": "INCOME_STATEMENT",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "annual_reports": data.get("annualReports", [])[:4],
-            "quarterly_reports": data.get("quarterlyReports", [])[:4],
-        }
-        return await self._save(f"alphavantage_income_{symbol}", payload)
+        envelope = RawPayload.build(
+            source="alpha_vantage",
+            endpoint="INCOME_STATEMENT",
+            symbol=symbol,
+            url=_BASE,
+            params={"function": "INCOME_STATEMENT", "symbol": symbol},
+            payload={
+                "annual_reports": data.get("annualReports", [])[:4],
+                "quarterly_reports": data.get("quarterlyReports", [])[:4],
+            },
+        )
+        return await self._save(f"alphavantage_income_{symbol}", envelope.to_json_dict())
 
 
 alpha_vantage_client = AlphaVantageClient()
 
 
-async def fetch_alpha_vantage_for_symbols(
-    symbols: list[str], max_symbols: int = 3
-) -> list[Path]:
+async def fetch_alpha_vantage_for_symbols(symbols: list[str], max_symbols: int = 3) -> list[Path]:
     """
     Pull quote + overview + income statement for up to `max_symbols` tickers.
 

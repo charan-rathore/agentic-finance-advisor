@@ -24,18 +24,19 @@ import asyncio
 import json
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from loguru import logger
 from textblob import TextBlob
 
-from core.settings import settings
-from core.queues import raw_market_queue, raw_news_queue, insights_queue
-from core.wiki import ingest_to_wiki, query_wiki, lint_wiki
 from core.fetchers import fetch_google_news_rss
+from core.queues import insights_queue, raw_market_queue, raw_news_queue
+from core.settings import settings
+from core.wiki import ingest_to_wiki, lint_wiki, query_wiki
 from core.wiki_ingest import process_all_new_raw_files
 
-
 # ── Sentiment ─────────────────────────────────────────────────────────────────
+
 
 def analyze_sentiment(text: str) -> tuple[str, float]:
     """
@@ -54,6 +55,7 @@ def analyze_sentiment(text: str) -> tuple[str, float]:
 
 # ── Prompt builder (kept for unit tests and ad-hoc Gemini calls) ──────────────
 
+
 def build_prompt(
     question: str,
     prices: list[dict],
@@ -69,21 +71,27 @@ def build_prompt(
     `CURRENT STOCK PRICES:` section; (2) it gives us a direct-context fallback
     when the wiki is empty (very first run, or after a wipe).
     """
-    price_lines = "\n".join(
-        f"- {p.get('symbol','?')}: ${p.get('price','?')} (vol: {p.get('volume','?')})"
-        for p in prices
-    ) or "(no recent prices)"
+    price_lines = (
+        "\n".join(
+            f"- {p.get('symbol','?')}: ${p.get('price','?')} (vol: {p.get('volume','?')})"
+            for p in prices
+        )
+        or "(no recent prices)"
+    )
 
-    headline_lines = "\n".join(
-        f"- [{a.get('source','')}] {a.get('headline','')}"
-        for a in articles[:20]
-    ) or "(no recent articles)"
+    headline_lines = (
+        "\n".join(f"- [{a.get('source','')}] {a.get('headline','')}" for a in articles[:20])
+        or "(no recent articles)"
+    )
 
-    sentiment_lines = "\n".join(
-        f"- {s.get('sentiment_label','?')} ({s.get('sentiment_score','?')}): "
-        f"{s.get('headline','')}"
-        for s in sentiment_rows[:20]
-    ) or "(no sentiment yet)"
+    sentiment_lines = (
+        "\n".join(
+            f"- {s.get('sentiment_label','?')} ({s.get('sentiment_score','?')}): "
+            f"{s.get('headline','')}"
+            for s in sentiment_rows[:20]
+        )
+        or "(no sentiment yet)"
+    )
 
     return (
         "You are a concise, data-driven personal finance AI assistant.\n"
@@ -99,6 +107,7 @@ def build_prompt(
 
 
 # ── Main agent loop ───────────────────────────────────────────────────────────
+
 
 async def run() -> None:
     """
@@ -121,9 +130,7 @@ async def run() -> None:
 
     last_analysis: float = 0.0
     last_lint: float = 0.0
-    lint_interval_seconds = float(
-        getattr(settings, "WIKI_LINT_INTERVAL_HOURS", 6)
-    ) * 3600
+    lint_interval_seconds = float(getattr(settings, "WIKI_LINT_INTERVAL_HOURS", 6)) * 3600
     ingest_batch_size = int(getattr(settings, "WIKI_INGEST_EVERY_N_ARTICLES", 5))
 
     while True:
@@ -137,9 +144,7 @@ async def run() -> None:
         while not raw_news_queue.empty():
             article = await raw_news_queue.get()
             news_buffer.append(article)
-            label, score = analyze_sentiment(
-                article["headline"] + " " + article.get("body", "")
-            )
+            label, score = analyze_sentiment(article["headline"] + " " + article.get("body", ""))
             enriched = {**article, "sentiment_label": label, "sentiment_score": score}
             sentiment_buffer.append(enriched)
             new_articles.append(enriched)
@@ -187,14 +192,12 @@ async def run() -> None:
             "user_query": question,
             "insight_text": insight_text,
             "sentiment_summary": sentiment_summary,
-            "sources": json.dumps(pages_consulted),   # wiki pages consulted
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sources": json.dumps(pages_consulted),  # wiki pages consulted
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         await insights_queue.put(insight_msg)
-        logger.info(
-            f"[Analysis Agent] Insight generated from {len(pages_consulted)} wiki pages"
-        )
+        logger.info(f"[Analysis Agent] Insight generated from {len(pages_consulted)} wiki pages")
         last_analysis = now
 
         # ── Process whatever the ingest agent already fetched ──────────────────
@@ -213,17 +216,19 @@ async def run() -> None:
         if now - last_lint > lint_interval_seconds:
             logger.info("[Analysis Agent] Running wiki lint...")
             lint_results = await lint_wiki()
-            
+
             # Check for symbols that need refresh
             needs_refresh = lint_results.get("needs_refresh", [])
             if needs_refresh:
                 logger.info(f"[Analysis Agent] Refreshing stale data for: {needs_refresh}")
                 # Trigger targeted refresh for stale symbols
-                stale_symbols = [item for item in needs_refresh if len(item) <= 5 and item.isupper()]
+                stale_symbols = [
+                    item for item in needs_refresh if len(item) <= 5 and item.isupper()
+                ]
                 if stale_symbols:
                     await fetch_google_news_rss(stale_symbols)
                     await process_all_new_raw_files()
-            
+
             last_lint = now
 
         await asyncio.sleep(10)

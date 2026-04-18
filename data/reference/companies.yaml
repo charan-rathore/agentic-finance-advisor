@@ -1,0 +1,287 @@
+# data/reference/companies.yaml
+#
+# Per-ticker intelligence used by the analysis agent to ground Gemini's wiki
+# prompts in material risks and cross-references. All 17 tickers currently
+# tracked in YFINANCE_SYMBOLS are covered. Edit freely — the loader
+# in core/company_intelligence.py caches this file and falls back to a generic
+# profile for anything missing.
+#
+# Fields:
+#   key_risks         : 3-6 concrete, company-specific risks (not generic "market risk")
+#   cross_references  : [[Wiki Link]] style tokens that become wiki cross-refs
+#   sector            : one-line sector label shown in the wiki page
+#   defensive_rating  : 'Highly Defensive' | 'Moderate Defensive' | 'Growth/Cyclical'
+#                     | 'High Growth/Volatile' | 'Cyclical/Financial' | 'Diversified'
+#                     | 'Defensive' | 'Consumer Cyclical'
+
+NVDA:
+  key_risks:
+    - "AI bubble/valuation concerns"
+    - "China export restrictions"
+    - "Cryptocurrency mining demand volatility"
+    - "Competition from AMD, Intel, custom chips"
+    - "Data center capex cycle dependency"
+  cross_references:
+    - "[[AI Chip Wars]]"
+    - "[[Semiconductor Cycle]]"
+    - "[[Data Center Investment]]"
+    - "[[Geopolitical Tech Risk]]"
+    - "[[Valuation Multiples]]"
+  sector: "Semiconductors"
+  defensive_rating: "Growth/Cyclical"
+
+AAPL:
+  key_risks:
+    - "iPhone demand saturation"
+    - "China market regulatory pressure"
+    - "Services growth deceleration"
+    - "Supply chain concentration"
+    - "EU regulatory compliance costs"
+  cross_references:
+    - "[[Consumer Electronics Cycle]]"
+    - "[[China Market Risk]]"
+    - "[[Services Transition]]"
+    - "[[Supply Chain Resilience]]"
+    - "[[Regulatory Compliance]]"
+  sector: "Consumer Technology"
+  defensive_rating: "Moderate Defensive"
+
+GOOGL:
+  key_risks:
+    - "Antitrust regulatory action"
+    - "AI search disruption threat"
+    - "Digital advertising cyclicality"
+    - "Cloud competition from AWS/Azure"
+    - "Privacy regulation compliance"
+  cross_references:
+    - "[[Big Tech Antitrust]]"
+    - "[[AI Search Revolution]]"
+    - "[[Digital Advertising]]"
+    - "[[Cloud Wars]]"
+    - "[[Privacy Regulation]]"
+  sector: "Internet/Software"
+  defensive_rating: "Growth/Cyclical"
+
+MSFT:
+  key_risks:
+    - "Cloud growth deceleration"
+    - "AI investment ROI uncertainty"
+    - "Enterprise spending cyclicality"
+    - "Cybersecurity liability"
+    - "Regulatory scrutiny on acquisitions"
+  cross_references:
+    - "[[Cloud Computing Growth]]"
+    - "[[Enterprise Software]]"
+    - "[[AI Investment Cycle]]"
+    - "[[Cybersecurity Risk]]"
+    - "[[Tech M&A Regulation]]"
+  sector: "Enterprise Software"
+  defensive_rating: "Moderate Defensive"
+
+AMZN:
+  key_risks:
+    - "E-commerce margin pressure"
+    - "AWS competition intensification"
+    - "Labor cost inflation"
+    - "Antitrust breakup risk"
+    - "International market losses"
+  cross_references:
+    - "[[E-commerce Maturation]]"
+    - "[[Cloud Infrastructure]]"
+    - "[[Labor Cost Inflation]]"
+    - "[[Big Tech Breakup]]"
+    - "[[International Expansion]]"
+  sector: "E-commerce/Cloud"
+  defensive_rating: "Growth/Cyclical"
+
+TSM:
+  key_risks:
+    - "Taiwan Strait geopolitical tension"
+    - "US/China chip export controls"
+    - "Capex intensity of leading-node fabs"
+    - "Concentration in Apple + NVIDIA as customers"
+    - "USD/TWD FX exposure"
+  cross_references:
+    - "[[Geopolitical Tech Risk]]"
+    - "[[AI Chip Wars]]"
+    - "[[Semiconductor Cycle]]"
+    - "[[Fab Capex Cycle]]"
+    - "[[FX Exposure]]"
+  sector: "Semiconductors"
+  defensive_rating: "Growth/Cyclical"
+
+META:
+  key_risks:
+    - "Metaverse investment uncertainty"
+    - "TikTok user engagement threat"
+    - "Apple iOS privacy changes"
+    - "Regulatory content moderation"
+    - "Advertising market cyclicality"
+  cross_references:
+    - "[[Metaverse Investment]]"
+    - "[[Social Media Competition]]"
+    - "[[Privacy Changes Impact]]"
+    - "[[Content Moderation]]"
+    - "[[Digital Advertising]]"
+  sector: "Social Media"
+  defensive_rating: "Growth/Cyclical"
+
+AVGO:
+  key_risks:
+    - "Hyperscaler AI-ASIC customer concentration"
+    - "VMware acquisition integration risk"
+    - "Cyclical wireless/enterprise demand"
+    - "Debt load from recent M&A"
+    - "Regulatory scrutiny on bundled software pricing"
+  cross_references:
+    - "[[AI Infrastructure Buildout]]"
+    - "[[Semiconductor Cycle]]"
+    - "[[Tech M&A Regulation]]"
+    - "[[Corporate Debt Cycle]]"
+    - "[[Software-Hardware Bundling]]"
+  sector: "Semiconductors / Infrastructure Software"
+  defensive_rating: "Growth/Cyclical"
+
+TSLA:
+  key_risks:
+    - "EV competition acceleration"
+    - "Autonomous driving delays"
+    - "China market dependency"
+    - "Production scaling challenges"
+    - "CEO key person risk"
+  cross_references:
+    - "[[EV Market Competition]]"
+    - "[[Autonomous Driving]]"
+    - "[[China Auto Market]]"
+    - "[[Manufacturing Scale]]"
+    - "[[Key Person Risk]]"
+  sector: "Electric Vehicles"
+  defensive_rating: "High Growth/Volatile"
+
+"BRK.B":
+  key_risks:
+    - "Succession risk post-Buffett/Munger"
+    - "Insurance float investment returns"
+    - "Concentrated equity portfolio (AAPL > 40% historically)"
+    - "Cyclical exposure via BNSF and energy subsidiaries"
+    - "Cash drag when opportunities are scarce"
+  cross_references:
+    - "[[Key Person Risk]]"
+    - "[[Insurance Float]]"
+    - "[[Equity Concentration]]"
+    - "[[Cyclical Industrials]]"
+    - "[[Capital Allocation Discipline]]"
+  sector: "Diversified Holdings"
+  defensive_rating: "Diversified"
+
+JNJ:
+  key_risks:
+    - "Talc litigation liability"
+    - "Patent cliff on key drugs"
+    - "Biosimilar competition"
+    - "FDA approval delays"
+    - "Healthcare pricing pressure"
+  cross_references:
+    - "[[Healthcare Litigation]]"
+    - "[[Patent Cliff Risk]]"
+    - "[[Biosimilar Competition]]"
+    - "[[Dividend Aristocrats]]"
+    - "[[Defensive Healthcare]]"
+  sector: "Healthcare"
+  defensive_rating: "Highly Defensive"
+
+JPM:
+  key_risks:
+    - "Interest rate cycle dependency"
+    - "Credit loss provisioning"
+    - "Trading revenue volatility"
+    - "Regulatory capital requirements"
+    - "Fintech banking disruption"
+  cross_references:
+    - "[[Interest Rate Cycle]]"
+    - "[[Credit Cycle Risk]]"
+    - "[[Banking Regulation]]"
+    - "[[Fintech Banking]]"
+    - "[[Systematic Risk]]"
+  sector: "Banking"
+  defensive_rating: "Cyclical/Financial"
+
+V:
+  key_risks:
+    - "Central bank digital currencies"
+    - "Fintech payment disruption"
+    - "Interchange fee regulation"
+    - "Economic recession impact"
+    - "Cryptocurrency adoption"
+  cross_references:
+    - "[[Digital Payment Evolution]]"
+    - "[[Fintech Disruption]]"
+    - "[[Payment Network Moats]]"
+    - "[[Regulatory Fee Pressure]]"
+    - "[[Economic Cycle Impact]]"
+  sector: "Payment Processing"
+  defensive_rating: "Moderate Defensive"
+
+UNH:
+  key_risks:
+    - "Medicare Advantage rate pressure"
+    - "PBM regulatory scrutiny"
+    - "Medical loss ratio inflation"
+    - "Cyberattack / data breach exposure (Change Healthcare)"
+    - "Political risk to managed-care model"
+  cross_references:
+    - "[[Healthcare Reimbursement]]"
+    - "[[PBM Regulation]]"
+    - "[[Medical Cost Inflation]]"
+    - "[[Cybersecurity Risk]]"
+    - "[[Defensive Healthcare]]"
+  sector: "Managed Healthcare"
+  defensive_rating: "Defensive"
+
+PG:
+  key_risks:
+    - "Private-label pressure in household staples"
+    - "Input cost inflation (pulp, oil derivatives)"
+    - "FX translation headwinds"
+    - "Slowing unit volume in mature categories"
+    - "Ad spend efficiency vs DTC competitors"
+  cross_references:
+    - "[[Consumer Staples Moats]]"
+    - "[[Input Cost Inflation]]"
+    - "[[FX Exposure]]"
+    - "[[Private Label Threat]]"
+    - "[[Dividend Aristocrats]]"
+  sector: "Consumer Staples"
+  defensive_rating: "Highly Defensive"
+
+HD:
+  key_risks:
+    - "Housing turnover sensitivity"
+    - "Interest-rate-driven remodel demand"
+    - "Pro-customer wallet share vs Lowe's"
+    - "Lumber / commodity input volatility"
+    - "Labor cost pressure in stores + supply chain"
+  cross_references:
+    - "[[Housing Cycle]]"
+    - "[[Interest Rate Cycle]]"
+    - "[[Big-Box Retail Duopoly]]"
+    - "[[Commodity Input Costs]]"
+    - "[[Labor Cost Inflation]]"
+  sector: "Home Improvement Retail"
+  defensive_rating: "Consumer Cyclical"
+
+MA:
+  key_risks:
+    - "CBDC payment rail threat"
+    - "Buy-now-pay-later competition"
+    - "Cross-border fee pressure"
+    - "Economic downturn sensitivity"
+    - "Regulatory interchange limits"
+  cross_references:
+    - "[[Payment Network Duopoly]]"
+    - "[[BNPL Competition]]"
+    - "[[Cross-border Payments]]"
+    - "[[Economic Sensitivity]]"
+    - "[[Fee Regulation Risk]]"
+  sector: "Payment Processing"
+  defensive_rating: "Moderate Defensive"

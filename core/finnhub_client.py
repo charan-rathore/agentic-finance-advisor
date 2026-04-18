@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +31,8 @@ import httpx
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from core.schemas import RawPayload
 from core.settings import settings
-
 
 _BASE = "https://finnhub.io/api/v1"
 _MIN_INTERVAL_SECONDS = 1.2  # ≤ 50 req/min — comfortable under the 60 cap
@@ -70,7 +70,7 @@ class FinnhubClient:
             return resp.json()
 
     async def _save(self, name: str, data: dict) -> Path:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         path = self.raw_dir / f"{name}_{ts}.json"
         async with aiofiles.open(path, "w") as f:
             await f.write(json.dumps(data, indent=2, default=str))
@@ -81,26 +81,29 @@ class FinnhubClient:
         data = await self._get("/quote", {"symbol": symbol})
         if not data or data.get("c") in (None, 0):
             return None
-        payload = {
-            "symbol": symbol,
-            "source": "finnhub",
-            "endpoint": "quote",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "quote": {
-                "current": data.get("c"),
-                "change": data.get("d"),
-                "percent_change": data.get("dp"),
-                "day_high": data.get("h"),
-                "day_low": data.get("l"),
-                "open": data.get("o"),
-                "previous_close": data.get("pc"),
-                "timestamp": data.get("t"),
+        envelope = RawPayload.build(
+            source="finnhub",
+            endpoint="quote",
+            symbol=symbol,
+            url=f"{_BASE}/quote",
+            params={"symbol": symbol},
+            payload={
+                "quote": {
+                    "current": data.get("c"),
+                    "change": data.get("d"),
+                    "percent_change": data.get("dp"),
+                    "day_high": data.get("h"),
+                    "day_low": data.get("l"),
+                    "open": data.get("o"),
+                    "previous_close": data.get("pc"),
+                    "timestamp": data.get("t"),
+                }
             },
-        }
-        return await self._save(f"finnhub_quote_{symbol}", payload)
+        )
+        return await self._save(f"finnhub_quote_{symbol}", envelope.to_json_dict())
 
     async def company_news(self, symbol: str, days_back: int = 7) -> Path | None:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         start = today - timedelta(days=days_back)
         data = await self._get(
             "/company-news",
@@ -114,37 +117,36 @@ class FinnhubClient:
                 "summary": item.get("summary", ""),
                 "source": item.get("source", "finnhub"),
                 "url": item.get("url", ""),
-                "published_at": datetime.fromtimestamp(
-                    item.get("datetime", 0), tz=timezone.utc
-                ).isoformat()
+                "published_at": datetime.fromtimestamp(item.get("datetime", 0), tz=UTC).isoformat()
                 if item.get("datetime")
                 else None,
                 "category": item.get("category", ""),
             }
             for item in data[:25]
         ]
-        payload = {
-            "symbol": symbol,
-            "source": "finnhub",
-            "endpoint": "company-news",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "window_days": days_back,
-            "articles": articles,
-        }
-        return await self._save(f"finnhub_news_{symbol}", payload)
+        envelope = RawPayload.build(
+            source="finnhub",
+            endpoint="company-news",
+            symbol=symbol,
+            url=f"{_BASE}/company-news",
+            params={"symbol": symbol, "from": str(start), "to": str(today)},
+            payload={"window_days": days_back, "articles": articles},
+        )
+        return await self._save(f"finnhub_news_{symbol}", envelope.to_json_dict())
 
     async def recommendation_trends(self, symbol: str) -> Path | None:
         data = await self._get("/stock/recommendation", {"symbol": symbol})
         if not data:
             return None
-        payload = {
-            "symbol": symbol,
-            "source": "finnhub",
-            "endpoint": "recommendation",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "trends": data[:6],
-        }
-        return await self._save(f"finnhub_recommendation_{symbol}", payload)
+        envelope = RawPayload.build(
+            source="finnhub",
+            endpoint="recommendation",
+            symbol=symbol,
+            url=f"{_BASE}/stock/recommendation",
+            params={"symbol": symbol},
+            payload={"trends": data[:6]},
+        )
+        return await self._save(f"finnhub_recommendation_{symbol}", envelope.to_json_dict())
 
 
 finnhub_client = FinnhubClient()

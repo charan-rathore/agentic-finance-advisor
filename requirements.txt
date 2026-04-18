@@ -34,9 +34,8 @@ httpx==0.27.0
 aiofiles==24.1.0  # For async file operations
 
 # Extended data sources for stronger knowledge base
-# sec-edgar-downloader duplicates the companyfacts path in core/sec_client.py; tracked
-# for deletion in P1 of PROJECT_TODO.md. Left in for now so fetchers.py keeps importing.
-sec-edgar-downloader==5.1.0
+# NOTE: sec-edgar-downloader was removed — core/sec_client.py (async httpx
+# companyfacts client) is the single SEC code path.
 fredapi==0.5.2
 praw==7.7.1
 beautifulsoup4==4.12.3

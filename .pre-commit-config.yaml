@@ -1,0 +1,36 @@
+# Pre-commit hooks. Install once with:
+#   pip install -r requirements-dev.txt
+#   pre-commit install
+#
+# What runs on `git commit`:
+#   1. ruff (lint) — catches unused imports, undefined names, obvious bugs
+#   2. ruff-format — enforces a single formatting style
+#   3. basic file-hygiene hooks (trailing whitespace, merge conflicts, etc.)
+#
+# NOTE: mypy is deliberately NOT wired into pre-commit. Running a full
+# `mypy core agents ui` is too slow for an interactive commit loop and
+# occasionally flaps on optional deps. Run it manually before pushing:
+#   mypy core agents ui
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(data/|legacy/|.*\.md$)
+      - id: end-of-file-fixer
+        exclude: ^(data/|legacy/|.*\.md$)
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+        exclude: ^(data/|legacy/)
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: debug-statements
