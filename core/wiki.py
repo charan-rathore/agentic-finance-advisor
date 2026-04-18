@@ -65,22 +65,76 @@ def _read_wiki_file(rel_path: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
-def _write_wiki_file(path: "str | Path", content: str) -> None:
-    """
-    Write (overwrite) a wiki file. Accepts either a relative string path (resolved
-    against WIKI_DIR) or an absolute Path. Writes are synchronous — markdown files
-    are tiny and this avoids the trap of returning an un-awaited coroutine from a
-    sync call site.
+def _write_wiki_file(
+    path: "str | Path",
+    content: str,
+    engine: object = None,
+    change_summary: str = "wiki update",
+    source_urls: "list[str] | None" = None,
+    source_types: "list[str] | None" = None,
+    triggered_by: str = "ingest",
+) -> None:
+    """Write (overwrite) a wiki file and optionally record a version entry.
+
+    Backward-compatible: all existing callers that pass only ``(path, content)``
+    keep working because every new parameter defaults to a safe no-op value.
+
+    When ``engine`` is provided (PR 3+), ``core.trust.record_wiki_version`` is
+    called after the write to log what changed, how many words moved, and which
+    source URLs drove the update. The lazy import avoids a circular dependency
+    since ``core.trust`` imports ``core.models`` but not ``core.wiki``.
+
+    Accepts either a relative string path (resolved against WIKI_DIR) or an
+    absolute Path. Writes are synchronous — markdown files are tiny and this
+    avoids the trap of returning an un-awaited coroutine from a sync call site.
     """
     p = _wiki_path(path) if isinstance(path, str) else Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+
+    old_content = p.read_text(encoding="utf-8") if p.exists() else ""
     p.write_text(content, encoding="utf-8")
-    logger.debug(f"[Wiki] Wrote {p} ({len(content)} chars)")
+
+    rel = str(path) if isinstance(path, str) else str(p.relative_to(Path(settings.WIKI_DIR)))
+    logger.debug(f"[Wiki] Wrote {rel} ({len(content)} chars)")
+
+    if engine is not None:
+        from core.trust import record_wiki_version
+
+        record_wiki_version(
+            engine=engine,
+            page_name=rel,
+            new_content=content,
+            old_content=old_content,
+            change_summary=change_summary,
+            source_urls=source_urls or [],
+            source_types=source_types or [],
+            triggered_by=triggered_by,
+        )
 
 
-async def _awrite_wiki_file(path: "str | Path", content: str) -> None:
-    """Async wrapper kept for wiki_ingest.py callers that live inside coroutines."""
-    _write_wiki_file(path, content)
+async def _awrite_wiki_file(
+    path: "str | Path",
+    content: str,
+    engine: object = None,
+    change_summary: str = "wiki update",
+    source_urls: "list[str] | None" = None,
+    source_types: "list[str] | None" = None,
+    triggered_by: str = "ingest",
+) -> None:
+    """Async wrapper kept for wiki_ingest.py callers that live inside coroutines.
+
+    Forwards all trust-layer args to ``_write_wiki_file`` so the async path
+    gets the same versioning behaviour as the sync path once PR 4 wires it in.
+    """
+    _write_wiki_file(
+        path,
+        content,
+        engine=engine,
+        change_summary=change_summary,
+        source_urls=source_urls,
+        source_types=source_types,
+        triggered_by=triggered_by,
+    )
 
 
 def _append_log(entry: str) -> None:
@@ -270,6 +324,100 @@ WRITE THE OVERVIEW NOW (markdown only):"""
     logger.info("[Wiki] Ingest complete.")
 
 
+# ── Confidence + staleness helpers (used by query_wiki) ──────────────────────
+
+
+def _compute_confidence(
+    consulted_pages: list[str],
+    page_contents: "dict[str, str] | None" = None,
+) -> float:
+    """Compute an honest, explainable confidence score for a query response.
+
+    Starts at 1.0 and applies three observable deductions:
+
+    - **Stale penalty** (−0.15 per page): any page with ``stale: true`` in its
+      YAML frontmatter was flagged by the lint cycle as out-of-date.
+    - **Source-diversity penalty** (−0.20, applied once): if fewer than two
+      distinct ``data_sources`` types appear across all consulted pages the
+      answer rests on a single information type (e.g. only RSS news, no price
+      or fundamentals data).
+    - **Recency penalty** (−0.10, applied once): if every consulted page with
+      a ``last_updated`` timestamp is older than 24 hours the whole knowledge
+      context is stale by wall-clock time.
+
+    Floor is 0.30 — even a maximally-penalised answer is not zero-confidence,
+    it just signals that the user should verify the numbers independently.
+
+    The ``page_contents`` arg is an optimisation: ``query_wiki`` already holds
+    the raw content in memory, so we accept it here to avoid re-reading every
+    page from disk. Falls back to ``_read_wiki_file`` when not supplied.
+    """
+    score = 1.0
+    source_types_seen: set[str] = set()
+    any_page_recent = False
+    now = datetime.now(UTC)
+
+    for page in consulted_pages:
+        content = (page_contents or {}).get(page) or _read_wiki_file(page)
+        if not content:
+            continue
+
+        fm: dict = {}
+        if content.startswith("---"):
+            try:
+                fm = yaml.safe_load(content.split("---", 2)[1]) or {}
+            except yaml.YAMLError:
+                fm = {}
+
+        if fm.get("stale") is True:
+            score -= 0.15
+
+        for st in fm.get("data_sources", []):
+            source_types_seen.add(st)
+
+        lu = fm.get("last_updated")
+        if lu:
+            try:
+                if isinstance(lu, str):
+                    lu_dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                else:
+                    lu_dt = lu if lu.tzinfo else lu.replace(tzinfo=UTC)
+                if (now - lu_dt).total_seconds() / 3600 <= 24:
+                    any_page_recent = True
+            except Exception:
+                pass
+
+    if len(source_types_seen) < 2:
+        score -= 0.20
+
+    if consulted_pages and not any_page_recent:
+        score -= 0.10
+
+    return round(max(score, 0.30), 2)
+
+
+def _any_stale(
+    consulted_pages: list[str],
+    page_contents: "dict[str, str] | None" = None,
+) -> str:
+    """Return ``'yes'`` if any consulted page has ``stale: true`` in its
+    YAML frontmatter, ``'no'`` otherwise.
+
+    Accepts pre-loaded ``page_contents`` to avoid redundant disk reads when
+    called from ``query_wiki`` (which already holds the content in memory).
+    """
+    for page in consulted_pages:
+        content = (page_contents or {}).get(page) or _read_wiki_file(page)
+        if content and content.startswith("---"):
+            try:
+                fm = yaml.safe_load(content.split("---", 2)[1]) or {}
+                if fm.get("stale") is True:
+                    return "yes"
+            except yaml.YAMLError:
+                pass
+    return "no"
+
+
 # ── Operation 2: Query the wiki ───────────────────────────────────────────────
 
 
@@ -315,18 +463,24 @@ No other text."""
     ]
 
     # ── Step 2: Read those pages ─────────────────────────────────────────────
+    # Keep loaded content in a dict so _compute_confidence / _any_stale can
+    # reuse it without a second round of disk reads.
     pages_context = ""
-    consulted = []
+    consulted: list[str] = []
+    loaded: dict[str, str] = {}
+
     for path in relevant_paths[:5]:
         content = _read_wiki_file(path)
         if content:
             pages_context += f"\n\n### From `{path}`:\n{content}"
             consulted.append(path)
+            loaded[path] = content
 
     # Always include overview for context
     if overview_content and "overview.md" not in consulted:
         pages_context = f"\n\n### From `overview.md`:\n{overview_content}" + pages_context
         consulted.insert(0, "overview.md")
+        loaded["overview.md"] = overview_content
 
     # ── Step 3: Generate the answer from pre-compiled wiki content ────────────
     answer_prompt = f"""You are a concise, data-driven personal finance AI assistant.
@@ -350,15 +504,51 @@ YOUR RESPONSE:"""
     answer = await call_gemini(answer_prompt)
 
     # ── Step 4: File the insight back into the wiki ───────────────────────────
-    # Good answers compound the knowledge base — they don't disappear into chat
+    # Good answers compound the knowledge base — they don't disappear into chat.
+    # The structured frontmatter + confidence rubric make every filed insight
+    # self-documenting: you can tell at a glance how much to trust it and why.
+    import json as _json
+
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
-    insight_page = (
-        f"# Insight: {question[:80]}\n\n{answer}\n\n"
-        f"---\n*Sources consulted: {', '.join(consulted)}*\n"
-        f"*Generated: {timestamp} UTC*\n"
-    )
+    utc_label = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+    confidence = _compute_confidence(consulted, page_contents=loaded)
+
+    insight_page = f"""---
+page_type: insight
+generated_at: {utc_label}
+question: "{question[:120].replace('"', "'")}"
+pages_consulted: {_json.dumps(consulted)}
+confidence_score: {confidence}
+confidence_rubric: "stale_penalty=-0.15/page, source_diversity_penalty=-0.20, recency_penalty=-0.10, floor=0.30"
+---
+
+# Insight: {question[:80]}
+
+## Answer
+{answer}
+
+## Reasoning
+*This insight was derived from {len(consulted)} wiki page(s): {", ".join(f"`{p}`" for p in consulted)}.*
+*Confidence score: {confidence:.2f} — see frontmatter for rubric.*
+
+## Sources Consulted
+{chr(10).join(f"- `{p}`" for p in consulted)}
+
+## Trust Signals
+- Pages consulted: {len(consulted)}
+- Confidence score: {confidence:.2f}
+- Generated: {utc_label}
+- Any stale pages in context: {_any_stale(consulted, page_contents=loaded)}
+
+---
+*Last updated: {utc_label}*
+"""
+
     _write_wiki_file(f"insights/{timestamp}.md", insight_page)
-    _append_log(f"query | \"{question[:60]}...\" | consulted: {', '.join(consulted)}")
+    _append_log(
+        f"query | \"{question[:60]}...\" | consulted: {', '.join(consulted)} | confidence: {confidence:.2f}"
+    )
 
     return answer, consulted
 
