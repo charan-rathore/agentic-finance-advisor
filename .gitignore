@@ -51,3 +51,4 @@ alembic.ini.local
 # Local-only docs (not for GitHub)
 multi-agent-finance-cursor-plan-v2.md
 deep-research-report.md
+PROJECT_TODO.md
