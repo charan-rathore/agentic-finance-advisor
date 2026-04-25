@@ -1,0 +1,227 @@
+# data/reference/companies_india.yaml
+#
+# Per-ticker intelligence for Indian NSE-listed companies tracked by
+# the India fetcher (settings.INDIA_SYMBOLS). Mirrors the schema of
+# data/reference/companies.yaml but uses Indian-specific context.
+#
+# Fields:
+#   key_risks          : 3–6 concrete, company-specific risks (not generic "market risk")
+#   cross_references   : [[Wiki Link]] tokens for the Indian wiki knowledge graph
+#   sector             : one-line sector label in Indian market context
+#   defensive_rating   : same scale as global file
+#   nse_symbol         : official NSE ticker (with .NS suffix)
+#   market_cap_tier    : 'Large' | 'Mid' | 'Small' (SEBI category)
+#   index_membership   : list of major indices the stock belongs to
+
+RELIANCE.NS:
+  nse_symbol: "RELIANCE.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty 100"
+  key_risks:
+    - "Oil & gas price volatility impacts refining margins"
+    - "Heavy capital expenditure in Jio/Retail creating leverage risk"
+    - "Regulatory risk in telecom (TRAI spectrum policy changes)"
+    - "Succession and conglomerate holding structure complexity"
+    - "Retail/commerce business facing Amazon and Flipkart competition"
+  cross_references:
+    - "[[Jio Platforms]]"
+    - "[[Reliance Retail]]"
+    - "[[Indian Petrochemicals]]"
+    - "[[5G Rollout India]]"
+    - "[[Conglomerate Discount]]"
+  sector: "Conglomerate (Energy + Telecom + Retail)"
+  defensive_rating: "Moderate Defensive"
+
+TCS.NS:
+  nse_symbol: "TCS.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty IT"
+  key_risks:
+    - "US and EU discretionary IT spending slowdown"
+    - "INR appreciation hurts export revenue in reporting"
+    - "BFSI vertical concentration (~30% of revenue)"
+    - "Attrition and wage inflation in Indian IT talent market"
+    - "AI automation reducing demand for legacy IT services"
+  cross_references:
+    - "[[Indian IT Sector]]"
+    - "[[BFSI Technology Spend]]"
+    - "[[INR/USD Impact]]"
+    - "[[AI in Enterprise IT]]"
+    - "[[Tata Group]]"
+  sector: "Information Technology Services"
+  defensive_rating: "Moderate Defensive"
+
+HDFCBANK.NS:
+  nse_symbol: "HDFCBANK.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty Bank"
+    - "Nifty Financial Services"
+  key_risks:
+    - "Post-HDFC merger integration complexity and NIM compression"
+    - "RBI regulatory scrutiny on credit card growth and loan disbursal"
+    - "Rising GNPA in retail/unsecured lending if credit cycle turns"
+    - "Deposit mobilisation pressure in high interest-rate environment"
+    - "Slippage risk from legacy HDFC Ltd mortgage book"
+  cross_references:
+    - "[[HDFC Bank–HDFC Merger]]"
+    - "[[Indian Banking Sector]]"
+    - "[[RBI Monetary Policy]]"
+    - "[[Nifty Bank Index]]"
+    - "[[Credit Cycle India]]"
+  sector: "Private Sector Banking"
+  defensive_rating: "Moderate Defensive"
+
+INFY.NS:
+  nse_symbol: "INFY.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty IT"
+  key_risks:
+    - "Discretionary IT spend compression in North America"
+    - "Revenue concentration in BFSI and retail verticals"
+    - "Margin pressure from onsite hiring and visa costs"
+    - "Management credibility risk (history of whistleblower complaints)"
+    - "Attrition and bench cost management in post-pandemic normalisation"
+  cross_references:
+    - "[[Indian IT Sector]]"
+    - "[[Generative AI Services]]"
+    - "[[INR/USD Impact]]"
+    - "[[Large Cap IT Peer Comparison]]"
+  sector: "Information Technology Services"
+  defensive_rating: "Moderate Defensive"
+
+ICICIBANK.NS:
+  nse_symbol: "ICICIBANK.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty Bank"
+  key_risks:
+    - "Unsecured retail loan growth exposing book to credit risk if economy slows"
+    - "Competition for CASA deposits from small finance banks and fintechs"
+    - "Regulatory penalties risk (RBI has historically fined ICICI Bank)"
+    - "Loan against gold / microfinance stress if rural income drops"
+    - "Capital adequacy requirements limiting aggressive loan growth"
+  cross_references:
+    - "[[Indian Banking Sector]]"
+    - "[[Credit Cycle India]]"
+    - "[[RBI Monetary Policy]]"
+    - "[[Retail Lending Boom]]"
+  sector: "Private Sector Banking"
+  defensive_rating: "Moderate Defensive"
+
+HINDUNILVR.NS:
+  nse_symbol: "HINDUNILVR.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty FMCG"
+  key_risks:
+    - "Rural demand slowdown compresses volume growth"
+    - "Raw material (palm oil, crude derivatives) cost inflation"
+    - "Competitive pressure from regional and D2C FMCG brands"
+    - "Premium/urban portfolio growth slowing post-pandemic splurge"
+    - "High P/E multiple creates valuation risk in a rate-up environment"
+  cross_references:
+    - "[[FMCG Sector India]]"
+    - "[[Rural Consumption Trends]]"
+    - "[[Commodity Cost Inflation]]"
+    - "[[Unilever Global]]"
+  sector: "Consumer Goods (FMCG)"
+  defensive_rating: "Highly Defensive"
+
+BAJFINANCE.NS:
+  nse_symbol: "BAJFINANCE.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Nifty Financial Services"
+  key_risks:
+    - "Unsecured consumer lending book most exposed to credit cycle"
+    - "RBI directive on EMI card usage compliance"
+    - "Valuation premium (high P/B) sensitive to growth slowdown"
+    - "Rising cost of funds pressuring spreads as rates stay elevated"
+    - "Customer acquisition cost rising in competitive NBFC landscape"
+  cross_references:
+    - "[[NBFC Sector India]]"
+    - "[[Consumer Credit Boom]]"
+    - "[[RBI NBFC Regulations]]"
+    - "[[Credit Cycle India]]"
+  sector: "Non-Banking Financial Company (NBFC)"
+  defensive_rating: "Growth/Cyclical"
+
+SBIN.NS:
+  nse_symbol: "SBIN.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Sensex"
+    - "Nifty Bank"
+    - "Nifty PSU Bank"
+  key_risks:
+    - "Government ownership limits pricing power and capital allocation flexibility"
+    - "Historical PSU bank NPA cycles — risk of recurrence in priority sector lending"
+    - "Staff costs and legacy IT infrastructure vs. private bank efficiency"
+    - "Exposure to government infrastructure projects that may have delays"
+    - "Dividend decisions influenced by government fiscal needs"
+  cross_references:
+    - "[[PSU Banking Sector]]"
+    - "[[Government Divestment India]]"
+    - "[[Indian Banking Sector]]"
+    - "[[Priority Sector Lending]]"
+  sector: "Public Sector Banking"
+  defensive_rating: "Moderate Defensive"
+
+ADANIENT.NS:
+  nse_symbol: "ADANIENT.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Nifty 100"
+  key_risks:
+    - "Conglomerate discount and governance concerns post-Hindenburg report"
+    - "High leverage across the Adani Group entities"
+    - "Regulatory and political risk given government infrastructure contracts"
+    - "Airport and port business dependent on infrastructure tariff approvals"
+    - "Green energy capex creates long payback periods under high interest rates"
+  cross_references:
+    - "[[Adani Group]]"
+    - "[[Indian Infrastructure Sector]]"
+    - "[[Conglomerate Discount]]"
+    - "[[Green Energy India]]"
+    - "[[Hindenburg Research Report]]"
+  sector: "Infrastructure & Energy Conglomerate"
+  defensive_rating: "Growth/Cyclical"
+
+WIPRO.NS:
+  nse_symbol: "WIPRO.NS"
+  market_cap_tier: "Large"
+  index_membership:
+    - "Nifty 50"
+    - "Nifty IT"
+  key_risks:
+    - "Underperformance vs. peers in revenue growth since 2020 restructuring"
+    - "Promoter stake sales and ownership structure complexity"
+    - "Margin recovery challenged by higher onsite mix and pricing pressure"
+    - "AI automation reducing demand for traditional IT services faster than pivoting"
+    - "Smaller scale disadvantage vs. TCS/Infosys in large deal wins"
+  cross_references:
+    - "[[Indian IT Sector]]"
+    - "[[IT Services Revenue Growth]]"
+    - "[[INR/USD Impact]]"
+    - "[[Large Cap IT Peer Comparison]]"
+  sector: "Information Technology Services"
+  defensive_rating: "Moderate Defensive"

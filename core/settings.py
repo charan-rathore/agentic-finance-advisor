@@ -89,6 +89,62 @@ class Settings:
     WIKI_LINT_STALE_HOURS_SEC: int = int(os.getenv("WIKI_LINT_STALE_HOURS_SEC", "168"))
     WIKI_LINT_STALE_HOURS_MACRO: int = int(os.getenv("WIKI_LINT_STALE_HOURS_MACRO", "72"))
 
+    # ── Indian Market Data ────────────────────────────────────────────────────
+    # NSE symbols use the `.NS` suffix with yfinance — no new library needed.
+    # 10 liquid, large-cap NSE names covering banking, IT, energy, FMCG.
+    INDIA_SYMBOLS: list[str] = [
+        s.strip()
+        for s in os.getenv(
+            "INDIA_SYMBOLS",
+            "RELIANCE.NS,TCS.NS,HDFCBANK.NS,INFY.NS,ICICIBANK.NS,"
+            "HINDUNILVR.NS,BAJFINANCE.NS,SBIN.NS,ADANIENT.NS,WIPRO.NS",
+        ).split(",")
+        if s.strip()
+    ]
+
+    # Wiki directory for Indian knowledge base (parallel to WIKI_DIR for global)
+    INDIA_WIKI_DIR: str = os.getenv("INDIA_WIKI_DIR", "./data/wiki_india")
+
+    # Raw data sub-directory for Indian sources
+    INDIA_RAW_DATA_DIR: str = os.getenv("INDIA_RAW_DATA_DIR", "./data/raw/india")
+
+    # AMFI mutual fund scheme codes to track (mfapi.in, free, no key required).
+    # Format: "code:friendly_name" comma-separated. Chosen for breadth of
+    # investment categories relevant to Indian retail investors.
+    INDIA_MF_SCHEMES: list[str] = [
+        s.strip()
+        for s in os.getenv(
+            "INDIA_MF_SCHEMES",
+            # Nifty 50 index fund — the SIP default for beginners
+            "148360:LT_Nifty50_Index,"
+            # ELSS tax-saving equity fund (80C benefit, 3-year lock-in)
+            "135781:Mirae_ELSS_TaxSaver,"
+            # Flexi-cap actively managed equity
+            "122639:Parag_Parikh_FlexiCap,"
+            # Liquid fund — short-term cash parking (< 91 days)
+            "119800:SBI_Liquid,"
+            # Balanced Advantage — auto-allocates equity/debt by market level
+            "120377:ICICI_BalancedAdvantage,"
+            # Short-duration debt — 1–3 year horizon, safer than equity
+            "119016:HDFC_ShortTermDebt",
+        ).split(",")
+        if s.strip()
+    ]
+
+    # Fetch cadences for Indian sources (hours)
+    INDIA_PRICE_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("INDIA_PRICE_FETCH_INTERVAL_HOURS", "0.083")  # ~5 min
+    )
+    INDIA_MF_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("INDIA_MF_FETCH_INTERVAL_HOURS", "24")  # NAV updates once daily
+    )
+    INDIA_RBI_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("INDIA_RBI_FETCH_INTERVAL_HOURS", "24")  # Policy rates rarely change
+    )
+    INDIA_NEWS_FETCH_INTERVAL_HOURS: float = float(
+        os.getenv("INDIA_NEWS_FETCH_INTERVAL_HOURS", "1")
+    )
+
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 

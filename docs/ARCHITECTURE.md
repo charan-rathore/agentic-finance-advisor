@@ -1,200 +1,308 @@
 # Architecture
 
-Multi-agent LLM-powered finance advisor with zero external costs. Free-tier-only stack.
+> Multi-agent AI investment advisor for Indian retail investors ("Bharat"), with a
+> parallel global (US) market track. Free-tier-only stack — zero operational cost.
 
 ## Core Principles
 
-1. **Zero cost** — Google Gemini free tier (1M tokens/day) + yfinance + RSS feeds + SQLite
-2. **LLM Wiki over RAG** — persistent markdown knowledge base that compounds over time
-3. **Async multi-agent** — three specialized agents communicate via `asyncio.Queue`
-4. **Fail-safe data fetching** — cadence tracking, timeouts, graceful degradation
+1. **India-first** — primary knowledge base is `data/wiki_india/`; Indian instruments,
+   INR-denominated examples, SEBI/AMFI regulatory context, SIP-first advice.
+2. **Dual-wiki, shared engine** — the same three-agent pipeline serves both an Indian
+   wiki and a global wiki. Switching is a single setting; no code is duplicated.
+3. **LLM Wiki over RAG** — Gemini compiles incoming data into persistent markdown pages
+   that compound over time. Queries read pre-synthesised knowledge instead of searching
+   raw vectors. No vector DB, no embedding model costs.
+4. **Trust Layer** — every answer carries a confidence score (0.30–1.00) computed from
+   observable signals (staleness, source diversity, recency). Every wiki write is
+   version-tracked with its source URLs. Users can always see *why* to trust advice.
+5. **Fail-safe fetching** — cadence tracking, per-source timeouts, content-hash dedup,
+   graceful degradation when any API key is absent.
+6. **Zero cost** — Gemini free tier (1 M tokens/day) + yfinance + RSS + AMFI NAV API +
+   RBI rates + SQLite. No credit card required to run the prototype.
+
+---
 
 ## System Overview
 
 ```
-┌─ Ingest Agent ─────┐    ┌─ Analysis Agent ──┐    ┌─ Storage Agent ────┐
-│ • yfinance prices  │───→│ • Sentiment (TB)  │───→│ • SQLite persist   │
-│ • Google News RSS  │    │ • LLM Wiki updates │    │ • Query interface  │
-│ • SEC EDGAR facts  │    │ • Gemini synthesis │    │ • Health metrics   │
-│ • FRED macro       │    │ • Beginner routing │    └────────────────────┘
-│ • Alpha Vantage    │    └────────────────────┘              │
-│ • Finnhub          │                                        │
-└────────────────────┘                                        ▼
-         │                                           ┌─ Streamlit UI ─────┐
-         │                                           │ • Dashboard + chat │
-         ▼                                           │ • System Health    │
-┌─ Raw Data ─────────┐                               │ • Beginner mode    │
-│ data/raw/           │                               └────────────────────┘
-│ • JSON envelopes    │                                        ▲
-│ • Per-source cadence│                                        │
-└─────────────────────┘                                        │
-         │                                                     │
-         ▼                                                     │
-┌─ LLM Wiki ─────────┐                                         │
-│ data/wiki/          │─────────────────────────────────────────┘
-│ • stocks/AAPL.md    │
-│ • concepts/*.md     │
-│ • insights/*.md     │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Data Flow — Dual Market                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  INDIAN DATA SOURCES          GLOBAL DATA SOURCES
+  ─────────────────            ────────────────────
+  NSE (.NS via yfinance) ──┐   yfinance (US) ──────┐
+  AMFI NAV API ────────────┤   Alpha Vantage ───────┤
+  RBI rates ───────────────┤   Finnhub ─────────────┤
+  ET / LiveMint RSS ───────┤   FRED macro ──────────┤
+  Google News (.NS) ───────┘   Google News (US) ─────┘
+           │                              │
+           ▼                              ▼
+  ┌─── Ingest Agent ──────────────────────────────────────────┐
+  │  • Fetches all sources on configurable cadences            │
+  │  • Saves raw JSON to data/raw/ (provenance envelope)       │
+  │  • Tracks fetch state in SQLite (prevents re-hammering)    │
+  │  • Each source timeout-guarded (180 s ceiling)             │
+  └─────────────────────────────────┬─────────────────────────┘
+                                    │  raw_market_queue
+                                    │  raw_news_queue
+                                    ▼
+  ┌─── Analysis Agent ────────────────────────────────────────┐
+  │  • TextBlob sentiment on news headlines                    │
+  │  • Routes to India wiki or Global wiki by market tag       │
+  │  • Calls Gemini to update wiki pages from raw data         │
+  │  • Confidence scoring on every query answer                │
+  │  • Beginner / horizon / profile-aware routing              │
+  │  • lint_wiki() every 6h — contradiction + staleness audit  │
+  └─────────────────────────────────┬─────────────────────────┘
+                                    │  insights_queue
+                       ┌────────────┼────────────┐
+                       ▼            ▼            ▼
+              data/wiki_india/   data/wiki/   data/raw/
+              (PRIMARY)          (global)     (all sources)
+
+                                    │
+                                    ▼
+  ┌─── Storage Agent ─────────────────────────────────────────┐
+  │  • SQLite ORM: market_snapshots, news_articles, insights   │
+  │  • source_registry, knowledge_versions (Trust Layer)       │
+  │  • user_profiles (personalisation)                         │
+  │  • Query helpers for Streamlit UI                          │
+  └─────────────────────────────────┬─────────────────────────┘
+                                    │
+                                    ▼
+  ┌─── Streamlit UI (port 8501) ──────────────────────────────┐
+  │  Market selector:  🇮🇳 Indian Market  |  🌐 Global Market  │
+  │  Tabs: Dashboard · Ask Advisor · System Health · Sources   │
+  │  Sidebar: Experience level · Investment horizon · Profile  │
+  └───────────────────────────────────────────────────────────┘
 ```
-
-## Three-Agent Pipeline
-
-### 1. Ingest Agent (`agents/ingest_agent.py`)
-
-**Responsibility:** Fetch market data, news, and SEC filings on configurable cadences.
-
-- **Price data:** yfinance every 5 minutes (default)
-- **News:** Google News RSS per symbol every 5 minutes
-- **SEC company facts:** async httpx client every 24 hours
-- **Macro indicators:** FRED API every 24 hours  
-- **Premium sources:** Alpha Vantage (quotes/fundamentals), Finnhub (real-time/news)
-
-**Output:** Raw JSON payloads saved to `data/raw/` + messages to `raw_market_queue` / `raw_news_queue`
-
-**Resilience:** Per-source fetch-state tracking (SQLite), timeouts, exponential backoff, content-hash deduplication
-
-### 2. Analysis Agent (`agents/analysis_agent.py`)
-
-**Responsibility:** LLM knowledge synthesis and user query handling.
-
-- **Wiki maintenance:** Processes raw data into structured `data/wiki/` markdown pages
-- **Sentiment analysis:** TextBlob on news headlines → bullish/bearish/neutral classification
-- **LLM routing:** Detects beginner vs. experienced queries → different Gemini prompts
-- **Health monitoring:** `lint_wiki()` every 6 hours → contradiction detection + stale page flagging
-
-**Output:** Updated wiki pages + messages to `insights_queue`
-
-**Core innovation:** **LLM Wiki** (Karpathy pattern) — persistent markdown knowledge base that compounds over time instead of re-deriving everything from raw text
-
-### 3. Storage Agent (`agents/storage_agent.py`)
-
-**Responsibility:** Data persistence and query interface for the UI.
-
-- **SQLite ORM:** 3 tables (`market_snapshots`, `news_articles`, `insights`) via SQLAlchemy
-- **Query helpers:** `get_latest_prices()`, `get_recent_headlines()`, `get_recent_insights()`
-- **Wiki interface:** Read operations for Streamlit (analysis agent handles writes)
-
-**Output:** Structured data for Streamlit dashboard
-
-## Data Architecture
-
-### Raw Data Layer (`data/raw/`)
-
-All external API responses saved as JSON with provenance metadata:
-
-- **SEC:** `data/raw/sec/company_facts_<CIK>_<timestamp>.json`
-- **Alpha Vantage:** `data/raw/alpha_vantage/<endpoint>_<symbol>_<timestamp>.json`  
-- **Finnhub:** `data/raw/finnhub/<endpoint>_<symbol>_<timestamp>.json`
-- **News/macro:** Flat files with source prefix
-
-**Envelope schema:** `{source, endpoint, symbol, fetched_at, url, request_hash, status, payload}`
-
-### LLM Wiki (`data/wiki/`)
-
-Structured markdown knowledge base maintained by Gemini:
-
-```
-data/wiki/
-├── index.md              # Catalog of all pages (LLM reads this first)
-├── log.md                # Operation history (append-only)
-├── overview.md           # Market synthesis ("rolling 24h view")
-├── stocks/               
-│   ├── AAPL.md           # Per-symbol: price trends + news + fundamentals
-│   ├── MSFT.md
-│   └── ...
-├── concepts/
-│   ├── finance_basics.md # Beginner primer (stocks vs bonds, risk/return)
-│   └── tech_sector.md    # Cross-company thematic analysis  
-└── insights/
-    ├── 2026-04-18_10-30.md   # Timestamped analyses + lint reports
-    └── beginner_*.md         # Tailored beginner responses
-```
-
-**YAML frontmatter:** Each page carries `{page_type, last_updated, ttl_hours, symbol?, confidence, data_sources}`
-
-**Staleness detection:** UI + lint system flag pages past their TTL for refresh
-
-### SQLite Schema (`core/models.py`)
-
-Three flat tables for UI data:
-
-- **`market_snapshots`:** `(symbol, price, volume, captured_at)`
-- **`news_articles`:** `(headline, url, body, source, ingested_at)`
-- **`insights`:** `(insight_text, sentiment_summary, model_used, sources, generated_at)`
-
-**Fetch state tracking:** `fetch_runs` table prevents API re-hammering after restarts
-
-## Key Design Decisions
-
-### Why LLM Wiki over RAG?
-
-- **Compounding knowledge:** Wiki pages improve over time as new data arrives
-- **Human-readable:** Markdown is debuggable; embeddings are opaque
-- **Cost efficiency:** No vector DB infrastructure or embedding model costs
-- **Narrative coherence:** LLM maintains story threads across market events
-
-### Why asyncio over threading?
-
-- **I/O bound workload:** 95% waiting on HTTP APIs (yfinance, SEC, Gemini)
-- **Zero deployment complexity:** Single process scales to 100s of concurrent requests  
-- **Queue-based messaging:** `asyncio.Queue` gives us Kafka semantics with zero config
-
-### Why SQLite over PostgreSQL?
-
-- **Zero ops overhead:** File on disk, no server process
-- **Desktop-first:** Personal finance advisor, not multi-tenant SaaS
-- **Migration-ready:** Same SQLAlchemy ORM works with Postgres later
-
-### Why three agents vs. one?
-
-- **Separation of concerns:** Ingest (I/O bound), Analysis (CPU bound), Storage (CRUD)
-- **Independent cadences:** News every 5min, SEC every 24h, wiki lint every 6h
-- **Fault isolation:** One wedged API doesn't stall the entire system
-
-## Operational Excellence
-
-### Health Monitoring
-
-- **System Health tab:** Real-time wiki freshness + raw data metrics (no Gemini calls)
-- **`lint_wiki()`:** Full Gemini-powered audit (stale pages, contradictions, cross-refs)
-- **Fetch state tracking:** SQLite persistence prevents re-hammering APIs after restart
-
-### Error Handling
-
-- **Per-source timeouts:** Heavy fetches wrapped in `asyncio.wait_for(..., 180s)`
-- **Exponential backoff:** `tenacity` retry decorators on HTTP clients
-- **Graceful degradation:** Missing API keys → logs warning, continues with available data
-- **Content deduplication:** SHA-256 check before saving SEC company facts
-
-### Development Quality
-
-- **Linting:** `ruff` (E/F/I/B/UP/W rules) + `mypy` with `disallow_untyped_defs` ratchet  
-- **Testing:** 35 unit tests covering data transforms, cadence logic, wiki health
-- **Pre-commit hooks:** Auto-format + lint on every `git commit`
-- **Documentation:** `docs/DEV.md` (tooling), `legacy/LEGACY.md` (deprecated modules)
-
-## Scaling & Extension
-
-### Current Limits
-
-- **Symbols:** 17 hardcoded tickers (NVDA, AAPL, GOOGL, MSFT, ...)
-- **LLM calls:** Gemini free tier (15 RPM, 1M tokens/day, 32K context window)
-- **Storage:** SQLite (read-heavy, single writer)
-
-### Growth Path
-
-1. **More data sources:** Earnings calendars, insider trading, social sentiment
-2. **Personalization:** Portfolio tracking, watchlists, custom risk profiles  
-3. **Advanced analysis:** Sector rotation, technical indicators, macro correlations
-4. **Multi-tenant:** PostgreSQL + user authentication + per-user wikis
-
-### Migration Readiness
-
-- **Database:** SQLAlchemy ORM abstracts engine differences
-- **Queues:** `core/queues.py` interface layer (swap asyncio.Queue → Redis/SQS)
-- **LLM:** Model adapter pattern in `core/wiki.py` (swap Gemini → Claude/GPT)
 
 ---
 
-**Historical Context:** This architecture evolved from v1 (complex microservices) → v2 (simplified async) → v3 (LLM Wiki). Previous plan documents live in `docs/archive/` for reference.
+## Three-Agent Pipeline
+
+### Agent 1 — Ingest Agent (`agents/ingest_agent.py`)
+
+**What it does:** Continuously fetches market data and news on configurable cadences.
+Saves everything to `data/raw/` with a provenance envelope before any processing.
+
+**Indian data sources:**
+| Source | What it provides | Cadence | Key |
+| --- | --- | --- | --- |
+| yfinance `.NS` symbols | NSE price + volume | 5 min | None |
+| AMFI NAV API (mfapi.in) | Mutual fund daily NAV | 24 h | None |
+| RBI DBIE | Repo rate, CPI India, INR/USD | 24 h | None |
+| Google News RSS (`.NS`) | Indian equity news | 5 min | None |
+| Economic Times RSS | Market commentary | 5 min | None |
+
+**Global data sources:**
+| Source | What it provides | Cadence | Key |
+| --- | --- | --- | --- |
+| yfinance (US) | US equity price + volume | 5 min | None |
+| SEC EDGAR | Company facts (XBRL) | 24 h | None |
+| FRED | US macro (CPI, UNRATE, GDP) | 24 h | Free |
+| Alpha Vantage | Quote + fundamentals | 12 h | Free |
+| Finnhub | Real-time + company news | 6 h | Free |
+
+**Resilience:**
+- `FetchRun` SQLite table tracks last-success per source → survives restarts
+- `_guarded(coro, timeout=180)` ensures one wedged API cannot stall the loop
+- SHA-256 content hashing on SEC payloads prevents redundant 7 MB re-downloads
+- All sources gracefully degrade when keys are absent
+
+### Agent 2 — Analysis Agent (`agents/analysis_agent.py`)
+
+**What it does:** Converts raw data into structured knowledge and answers user queries.
+
+- **Wiki routing:** Reads `data/raw/`, calls Gemini, writes to the appropriate wiki
+  (`data/wiki_india/` for Indian sources, `data/wiki/` for global)
+- **Sentiment:** TextBlob on news headlines → bullish / bearish / neutral
+- **Query routing:** Detects beginner intent, investment horizon, user profile → picks
+  the right Gemini prompt and wiki subset to answer from
+- **Confidence scoring:** `_compute_confidence()` computes a 0.30–1.00 score from
+  staleness flags, source diversity, and recency — attached to every filed insight
+- **Health audit:** `lint_wiki()` every 6 h — Gemini-powered contradiction detection
+
+### Agent 3 — Storage Agent (`agents/storage_agent.py`)
+
+**What it does:** Persists everything to SQLite and exposes clean query helpers for
+the Streamlit UI. Keeps the UI free of direct SQLAlchemy / agent knowledge.
+
+---
+
+## Knowledge Base Architecture
+
+### Dual Wiki Design
+
+```
+data/
+├── wiki_india/                  ← PRIMARY (thesis deliverable)
+│   ├── index.md                 # Catalog of all Indian knowledge pages
+│   ├── log.md                   # Append-only operation log
+│   ├── overview.md              # Nifty/Sensex + RBI macro synthesis
+│   ├── stocks/
+│   │   ├── RELIANCE.md          # Price + news + SEC-equivalent fundamentals
+│   │   ├── TCS.md
+│   │   └── HDFCBANK.md  ...
+│   ├── mutual_funds/            # NEW category — no US equivalent
+│   │   ├── nifty50_index.md     # NAV history + expense ratio + risk rating
+│   │   ├── elss_top5.md
+│   │   └── liquid_funds.md
+│   ├── concepts/
+│   │   ├── finance_basics_india.md  # SIP, PPF, ELSS, NPS — India onboarding primer
+│   │   └── tax_india.md             # LTCG, STCG, 80C — critical for Indian advice
+│   └── insights/
+│       └── (timestamped answers, confidence-scored)
+│
+└── wiki/                        ← SECONDARY (global / US market)
+    ├── index.md
+    ├── overview.md
+    ├── stocks/                  # AAPL, MSFT, GOOGL ...
+    ├── concepts/
+    │   └── finance_basics.md    # US primer (existing)
+    └── insights/
+```
+
+**Why two directories, not one with tags?**
+- Each wiki can be demoed independently — clean separation for the thesis pitch
+- No risk of Indian SIP advice bleeding into US equity analysis or vice versa
+- Both wikis use identical code paths — `WIKI_DIR` is injected at call time
+- Operational: linting, health snapshots, and TTL staleness run independently
+
+### Wiki Page Anatomy
+
+Every page has a YAML frontmatter block that the Trust Layer reads:
+
+```yaml
+---
+page_type: stock_entity        # stock_entity | mutual_fund | concept | insight | primer
+symbol: RELIANCE                # omitted for non-stock pages
+market: india                   # "india" | "global" — routes queries correctly
+last_updated: 2026-04-25T10:00:00+00:00
+ttl_hours: 24                  # staleness threshold
+data_sources: [yfinance_ns, google_news] # used for confidence scoring
+confidence: high               # self-assessed: high | medium | low
+stale: false                   # set to true by lint_wiki() when TTL exceeded
+---
+```
+
+### Trust Layer (source provenance + knowledge versioning)
+
+```
+SQLite tables added by PRs 1–3:
+
+source_registry
+  url (unique) | domain | source_name | source_type | is_trusted | is_reachable
+  http_status | first_fetched_at | last_fetched_at | fetch_count
+
+knowledge_versions
+  page_name | version | changed_at | change_summary | source_urls (JSON)
+  source_types (JSON) | word_count_before | word_count_after | triggered_by
+```
+
+Every wiki write calls `record_wiki_version()` → the version history of any page
+is queryable. The Streamlit "Sources & History" page (PR 5) visualises this.
+
+### Confidence Score Rubric
+
+Every `query_wiki` answer is filed as a structured insight page with a computed
+confidence score, documented publicly so it can be explained in the thesis pitch:
+
+| Signal | Deduction |
+| --- | --- |
+| Any consulted page has `stale: true` | −0.15 per page |
+| Fewer than 2 distinct `data_sources` types across consulted pages | −0.20 |
+| All consulted pages have `last_updated` > 24 h ago | −0.10 |
+| **Floor** | **0.30** |
+
+A score of 1.00 means: all pages are fresh, from diverse sources, and none are stale.
+A score of 0.30 means: the answer is a best-effort guess — verify independently.
+
+---
+
+## SQLite Schema
+
+```
+market_snapshots   symbol | price | volume | captured_at
+news_articles      headline | url | body | source | ingested_at
+insights           user_query | insight_text | sentiment_summary | sources | generated_at
+fetch_runs         source | key | last_attempt_at | last_success_at | last_error
+source_registry    (Trust Layer — see above)
+knowledge_versions (Trust Layer — see above)
+user_profiles      name | monthly_income | monthly_sip_budget | risk_tolerance
+                   tax_bracket_pct | primary_goal | horizon_pref | created_at
+```
+
+---
+
+## Query Routing Logic
+
+```
+User question
+      │
+      ├─ Market selector (UI) ─────────────────────────────────┐
+      │                                                         │
+      ▼                                                         ▼
+  Indian wiki flow                                       Global wiki flow
+      │                                                         │
+      ├─ detect_beginner_intent() ── yes ──► beginner_india_answer()
+      │
+      ├─ classify_investment_horizon()
+      │     ├─ "short"        ──► short_term_india_answer()   [FD/liquid/T-bill]
+      │     ├─ "intermediate" ──► intermediate_india_answer() [SIP/ELSS/index]
+      │     └─ "long"         ──► long_term_india_answer()    [NPS/PPF/equity]
+      │
+      └─ profile_aware_query_india_wiki(question, user_profile)
+            └─ inject: income, SIP budget, risk, goal, horizon into Gemini prompt
+```
+
+---
+
+## Key Design Decisions
+
+### Why dual wiki, not a single database?
+
+Markdown files are human-readable, git-trackable, and diff-able. A DBA can understand
+a wiki page; they cannot read an embedding vector. When the thesis panel asks "where
+did this answer come from?", you can open the markdown file and show them.
+
+### Why SIP-first for Indian retail?
+
+SIP (Systematic Investment Plan) has 7.9 Cr active accounts in India (AMFI, March 2026).
+It is the dominant retail investment product for the ₹10K–₹1L/month income segment —
+exactly the TAM the problem statement targets. Starting the advisor with SIP education
+meets users where they already are.
+
+### Why LLM Wiki over RAG for India?
+
+Indian financial regulation changes frequently (SEBI circulars, budget tax changes,
+RBI policy). A wiki that Gemini actively maintains and corrects is more reliable than
+a vector index that silently serves stale embeddings. The TTL + staleness detection
+system ensures users always see when information is outdated.
+
+### Why confidence scores matter more for Indian retail users?
+
+An Indian retail user investing ₹5,000/month on a ₹40,000 income cannot afford to
+act on bad advice the way a US investor with a diversified portfolio can. The Trust
+Layer's confidence score + "any stale pages" flag gives users an honest signal of
+how much to trust the current answer — and the rubric is documented publicly so it
+survives scrutiny.
+
+### Migration Readiness
+
+| Component | Current | When to upgrade |
+| --- | --- | --- |
+| Queue | `asyncio.Queue` | → Redis/SQS when multi-container |
+| Database | SQLite | → PostgreSQL when multi-user |
+| LLM | Gemini 1.5 Flash | → Gemini 2.5 / GPT-4o when scaling |
+| Language | English | → Hindi via Gemini prompt directive today |
+
+---
+
+**Historical note:** This architecture evolved through three versions:
+- v1: Complex microservices (Kafka, ChromaDB, FastAPI) — over-engineered for a prototype
+- v2: Simplified async single process — better, but US-only
+- v3: LLM Wiki + Trust Layer + dual-market — current
+
+Previous plan documents: `docs/archive/`

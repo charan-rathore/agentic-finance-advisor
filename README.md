@@ -1,258 +1,287 @@
-# Multi-Agent AI Personal Finance Advisor
+# Bharat Finance AI — AI-Native Investment Advisor for Indian Retail Investors
 
-> A personal project demonstrating multi-agent AI architecture, LLM Wiki knowledge base,
-> and containerized deployment — built entirely with free, open-source tools.
+> **Thesis prototype** — Zupee "AI × Investments for Bharat" challenge.
+> Built to help 100 million+ Indians invest and grow their money — simply, intelligently, and at zero cost.
 
-## What It Does
+---
 
-Monitors stock prices and financial news in real time, analyzes market sentiment,
-maintains a persistent knowledge base using the LLM Wiki pattern, and generates personalized
-investment insights using Google Gemini — all automatically, on a schedule.
+## The Problem
 
-## Architecture
+Over 100 million Indians have smartphones, stable income, and the desire to invest — but most don't.
+The barriers are not ambition. They are:
 
-Three specialized agents communicate via async message queues, with a persistent LLM Wiki knowledge base:
+- **Complexity.** Financial apps assume you already know what SIP, ELSS, and LTCG mean.
+- **Trust.** "Best mutual fund" lists change every month and nobody explains why.
+- **Advice gap.** Human financial advisors serve HNIs. Retail investors get generic content.
+- **Language.** Most quality financial guidance is in English, not Hindi or regional languages.
+
+Existing apps give you data. None of them give you **understanding**.
+
+---
+
+## What This Builds
+
+An AI advisor that does three things no existing app does simultaneously:
+
+1. **Explains** — teaches the concepts you need *before* giving the recommendation,
+   using language you actually understand (₹ not $, SIP not 401k, PPF not Roth IRA).
+
+2. **Grounds every answer in live data** — Nifty 50 prices, mutual fund NAVs, RBI repo rate,
+   company news — fetched continuously, synthesised into a persistent knowledge base.
+
+3. **Tells you how much to trust the answer** — every response carries a confidence score
+   (0.30–1.00) computed from observable signals: how fresh the data is, how many independent
+   sources agree, whether any source is flagged as unreliable. No black box.
+
+The result is not a chatbot that hallucinates. It is an advisor that compounds knowledge
+every day and can show you exactly where every piece of advice came from.
+
+---
+
+## Who This Is For
+
+**Primary:** Indian retail investor, ₹25K–₹1L/month income, has some savings, doesn't know where to start.
+
+**Profile:** Uses UPI daily. Has a savings account. Has heard of SIP but never started one.
+Wants to save tax under 80C but doesn't know if ELSS or PPF is better for their situation.
+Would invest if someone explained it clearly and they could trust the advice.
+
+**Secondary:** The same investor, 2 years later — now tracking their SIP portfolio,
+optimising for LTCG efficiency, and asking nuanced questions about sector allocation.
+
+---
+
+## How It Works
+
+The system has three specialised agents running in parallel:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            Data Flow Architecture                           │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Data Collection (every 5 min)           │
+│                                                             │
+│  NSE prices (yfinance)  ──┐                                 │
+│  Mutual fund NAVs (AMFI)  ├──► Ingest Agent ──► data/raw/   │
+│  RBI rates               ──┘                                │
+│  Indian market news (RSS)                                   │
+└─────────────────────────────────────┬───────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     Knowledge Compilation (continuous)      │
+│                                                             │
+│  Analysis Agent reads raw data → calls Gemini →            │
+│  updates the Indian Knowledge Base (data/wiki_india/)       │
+│                                                             │
+│  data/wiki_india/                                           │
+│  ├── overview.md          ← Nifty/Sensex + macro snapshot   │
+│  ├── stocks/RELIANCE.md   ← price, news, fundamentals       │
+│  ├── mutual_funds/        ← NAV, expense ratio, ratings     │
+│  └── concepts/            ← SIP, PPF, ELSS, tax guide       │
+└─────────────────────────────────────┬───────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     User Interaction (Streamlit UI)         │
+│                                                             │
+│  "I earn ₹50,000/month. Where should I invest ₹5,000?"     │
+│                                                             │
+│  → Detects: beginner + intermediate horizon + India market  │
+│  → Reads: finance_basics_india.md + relevant fund pages     │
+│  → Answers: SIP-first plan, specific fund suggestions,      │
+│             tax saving (80C), confidence score              │
+│                                                             │
+│  Confidence: 0.87 | Sources: AMFI NAV, NSE price, RBI rate  │
+└─────────────────────────────────────────────────────────────┘
+```
 
-    ┌─────────────┐    raw_market_queue     ┌─────────────────────────────────┐
-    │             │ ──────────────────────► │                                 │
-    │ Ingest      │                         │     Analysis Agent              │
-    │ Agent       │    raw_news_queue       │                                 │
-    │             │ ──────────────────────► │ • Sentiment (TextBlob)          │
-    │ • yfinance  │                         │ • LLM Wiki Knowledge Base       │
-    │ • RSS feeds │                         │ • Gemini LLM                    │
-    └─────────────┘                         └─────────────┬───────────────────┘
-                                                          │
-                                                          │ insights_queue
-                                                          │
-    ┌─────────────────────────────────────────────────────▼───────────────────┐
-    │                        LLM Wiki Knowledge Base                          │
-    │                                                                         │
-    │  data/wiki/                                                             │
-    │  ├── index.md         ← Catalog of all pages                           │
-    │  ├── overview.md      ← Market synthesis                               │
-    │  ├── log.md           ← Operation history                              │
-    │  ├── stocks/          ← Per-symbol entity pages (AAPL.md, MSFT.md)     │
-    │  ├── concepts/        ← Cross-stock themes (tech_sector.md)            │
-    │  └── insights/        ← Filed query answers (auto-compounding)         │
-    │                                                                         │
-    │  Operations: ingest_to_wiki() → query_wiki() → lint_wiki()             │
-    └─────────────────────────────────────────────────────────────────────────┘
-                                            │
-                                            │
-                                  ┌─────────▼─────────┐      ┌─────────────────┐
-                                  │ Storage Agent     │      │ Streamlit UI    │
-                                  │                   │ ──── │                 │
-                                  │ • SQLite          │      │ • Live Dashboard│
-                                  │ • Serves UI data  │      │ • Port 8501     │
-                                  └───────────────────┘      └─────────────────┘
+**The knowledge base compounds.** Every good answer is filed back into the wiki as a
+versioned insight. The more the system runs, the better and faster the answers become.
 
-| Agent | Responsibility |
-| --- | --- |
-| **Ingest Agent** | Fetches prices (yfinance), news (RSS), and — when keys are present — SEC EDGAR, FRED, Alpha Vantage, Finnhub. Each heavy source is throttled via `FetchRun` cadences persisted in SQLite and hard-timeboxed so one wedged API cannot stall the loop. |
-| **Analysis Agent** | Sentiment analysis (TextBlob) + LLM Wiki maintenance + Gemini insights + beginner-mode onboarding. |
-| **Storage Agent** | Persists insights, market snapshots, news articles, and fetch-run state to SQLite; serves data to the UI. |
+---
 
-## Data sources
+## What Makes This Different
 
-| Source | Required? | Provides | Free-tier limit |
-| --- | --- | --- | --- |
-| yfinance (Yahoo Finance) | **Required** | Intraday price + volume per symbol | Unlimited (no key) |
-| RSS (Google News per-symbol) | **Required** | Headlines + summaries | Unlimited (no key) |
-| Google Gemini | **Required** | LLM synthesis of the wiki + Q&A | 1 M tokens/day |
-| SEC EDGAR (`core/sec_client.py`) | Optional | `companyfacts` XBRL (revenue, assets, liabilities, cash) | 10 req/s (just set `SEC_USER_AGENT`) |
-| FRED (`FRED_API_KEY`) | Optional | Macro series (CPI, UNRATE, FEDFUNDS, GDP, 10Y, mortgage) | 120 req/min |
-| Alpha Vantage (`ALPHA_VANTAGE_API_KEY`) | Optional | `GLOBAL_QUOTE`, `OVERVIEW`, `INCOME_STATEMENT` | 25 req/day, 5 req/min |
-| Finnhub (`FINNHUB_API_KEY`) | Optional | Real-time quote, per-company news, recommendation trends | 60 req/min |
-| Reddit (`REDDIT_CLIENT_*`) | Optional | Community sentiment from r/stocks, r/investing | 60 req/min |
+| Feature | This project | Existing apps (Groww, Zerodha, ET Money) |
+| --- | --- | --- |
+| Explains *why* before recommending | ✅ | ❌ |
+| Answers adapt to your income + goal + horizon | ✅ | ❌ |
+| Shows confidence score on every answer | ✅ | ❌ |
+| Knowledge compounds over time | ✅ | ❌ |
+| Works in Hindi | ✅ (via Gemini) | Partial |
+| Free to run | ✅ | N/A (B2C apps) |
 
-The agent **runs cleanly when any optional source is missing** — each fetcher
-short-circuits and logs a warning, the ingest loop moves on. All payloads land
-in `data/raw/` wrapped in the canonical envelope defined by
-`core/schemas.RawPayload` (`source`, `endpoint`, `symbol`, `fetched_at`, `url`,
-`request_hash`, `status`, `payload`).
+The **moat** is the Trust Layer — a source provenance system that tracks every data
+point used in every answer, computes an observable confidence score, and maintains
+a full version history of the knowledge base. No competitor shows you *why* to trust
+their advice. We show you the receipts.
+
+---
 
 ## Tech Stack
 
-| Layer | Tool | Why |
+| Component | Tool | Why |
 | --- | --- | --- |
-| Agent orchestration | Python `asyncio` | Event-driven, concurrent, zero infrastructure |
-| LLM | Google Gemini 1.5 Flash | Free tier, 1M tokens/day |
-| Knowledge Base | LLM Wiki (Karpathy pattern) | Persistent, compounding markdown wiki — no vector DB needed |
-| Sentiment | TextBlob | Free, offline NLP |
-| Market data | yfinance | Free Yahoo Finance wrapper |
-| News | feedparser (RSS) | Free, no API key |
-| Database | SQLite + SQLAlchemy | Zero-config, file-based |
-| UI | Streamlit | Free, Python-native dashboard |
-| Deployment | Docker + docker-compose | Fully containerized |
+| Agents | Python `asyncio` | Three parallel agents, zero infrastructure |
+| LLM | Google Gemini 1.5 Flash | Free tier, 1M tokens/day, excellent Hindi support |
+| Knowledge Base | LLM Wiki (Karpathy pattern) | Persistent, compounding markdown — no vector DB |
+| Indian market data | yfinance (`.NS` symbols) | NSE prices, free, no API key |
+| Mutual fund NAVs | AMFI API (mfapi.in) | Free, updated daily, covers all SEBI-registered schemes |
+| RBI macro | RBI DBIE | Repo rate, CPI India, INR/USD — free |
+| News | feedparser (RSS) | Google News + ET + LiveMint, free, no key |
+| Sentiment | TextBlob | Offline NLP, classifies news as bullish/bearish/neutral |
+| Database | SQLite + SQLAlchemy | Zero-config file-based DB, migrates to Postgres easily |
+| UI | Streamlit | Python-native dashboard, 10-minute setup |
+| Trust Layer | Custom (`core/trust.py`) | Source registry + knowledge versioning + confidence scores |
 
-**Total cost to run: $0.00**
+**Total running cost: ₹0 / month.**
+
+---
+
+## Prototype Demo Flow
+
+When you run the prototype, here is what a judge sees:
+
+1. **Dashboard** — Live Nifty 50 + top NSE stocks + Sensex + RBI repo rate. Updated every 5 minutes.
+2. **Ask the Advisor** — Type any question in English or Hindi:
+   - *"How do I get started with investing ₹3,000 per month?"*
+   - *"PPF vs ELSS — which is better for tax saving?"*
+   - *"Is Reliance Industries a good stock to buy now?"*
+3. **Answer with provenance** — Response includes the answer, confidence score (e.g. `0.82`),
+   which wiki pages were consulted, and whether any source is stale.
+4. **Sources & History** — Table of every data source the system has fetched from,
+   with trust + reachability status. Per-page version history showing how the knowledge grew.
+5. **System Health** — Which wiki pages are fresh vs. stale, how much raw data has been
+   collected, when the last knowledge audit ran.
+
+---
 
 ## Quick Start
 
 ### Prerequisites
+- Python 3.11+
+- Free Gemini API key from [aistudio.google.com](https://aistudio.google.com/) — no credit card needed
 
-- Docker + docker-compose installed
-- Free Gemini API key from https://aistudio.google.com/ (no credit card needed)
-
-### Run
-
-```bash
-git clone https://github.com/YOUR_USERNAME/multi-agent-finance
-cd multi-agent-finance
-cp .env.example .env
-# Edit .env: paste your GEMINI_API_KEY
-docker-compose up --build
-```
-
-Open **http://localhost:8501** for the dashboard.
-
-First insights appear after ~10 minutes (one full ingest + analysis cycle).
-
-### Run locally (no Docker)
+### Run locally
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate  # Requires Python 3.11+
+git clone <repo>
+cd starter-project
+
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+# Download TextBlob sentiment data (one-time)
 python -m textblob.download_corpora
-python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
-cp .env.example .env  # add your Gemini key
-python main.py        # agents in terminal
-# separate terminal:
-streamlit run ui/app.py
+
+cp .env.example .env
+# Open .env and add your GEMINI_API_KEY
+# All other keys are optional — the system runs without them
+
+python main.py          # starts all three agents (terminal 1)
+streamlit run ui/app.py # opens dashboard at http://localhost:8501 (terminal 2)
 ```
+
+First answers appear after ~10 minutes (one full data fetch + wiki update cycle).
+
+### Run with Docker
+
+```bash
+cp .env.example .env   # add GEMINI_API_KEY
+docker-compose up --build
+# Dashboard: http://localhost:8501
+```
+
+---
 
 ## Project Structure
 
 ```
-agents/          # The 3 specialized agents
-├── ingest_agent.py      # Fetches market data + news
-├── analysis_agent.py    # Sentiment + LLM Wiki + Gemini
-└── storage_agent.py     # SQLite persistence + UI data access
+agents/
+├── ingest_agent.py      # Fetches prices, news, mutual fund NAVs, RBI rates
+├── analysis_agent.py    # Sentiment + LLM Wiki updates + Gemini query answering
+└── storage_agent.py     # SQLite persistence + data interface for UI
 
-core/            # Shared config, DB models, message queues, wiki
-├── settings.py          # All configuration from .env
-├── models.py            # SQLAlchemy ORM models (SQLite)
-├── queues.py            # Async message queues (the "message bus")
-└── wiki.py              # LLM Wiki knowledge base operations
+core/
+├── settings.py          # All config from .env (single source of truth)
+├── models.py            # SQLAlchemy ORM (market snapshots, insights, trust tables)
+├── wiki.py              # LLM Wiki: ingest_to_wiki, query_wiki, confidence scoring
+├── wiki_ingest.py       # Routes raw JSON files → appropriate wiki pages via Gemini
+├── trust.py             # Trust Layer: source registry, knowledge versioning, confidence
+├── fetchers.py          # Data fetchers: FRED, Reddit, news RSS, sentiment
+├── fetchers_india.py    # Indian fetchers: AMFI NAV, RBI rates (new)
+├── sec_client.py        # SEC EDGAR async client (US market)
+├── alpha_vantage_client.py
+├── finnhub_client.py
+└── schemas.py           # RawPayload provenance envelope
 
 data/
-├── wiki/                # LLM Wiki knowledge base (markdown files)
-│   ├── index.md         # Catalog of all wiki pages
-│   ├── overview.md      # Rolling market synthesis
-│   ├── log.md           # Append-only operation log
-│   ├── stocks/          # Per-symbol entity pages (AAPL.md, MSFT.md, ...)
-│   ├── concepts/        # Cross-stock theme pages (incl. `finance_basics.md`)
-│   └── insights/        # Filed query answers (good answers compound the wiki)
-├── raw/                 # Raw API payloads (envelope-wrapped via core/schemas.py)
-│   ├── finnhub/         # Finnhub quote/news/recommendation JSON
-│   ├── alpha_vantage/   # Alpha Vantage quote/overview/income JSON
-│   ├── sec/             # SEC EDGAR companyfacts JSON
-│   └── (other sources)
-├── reference/
-│   └── companies.yaml   # Per-ticker risk profile + wiki cross-refs (17 tickers)
-└── finance.db           # SQLite database file (auto-created)
+├── wiki_india/          # PRIMARY — Indian knowledge base (Nifty, MFs, RBI, tax)
+├── wiki/                # SECONDARY — Global (US) knowledge base
+├── raw/                 # All fetched JSON files with provenance metadata
+│   ├── india/           # Indian raw data (AMFI, RBI, NSE news)
+│   ├── sec/             # SEC EDGAR company facts
+│   ├── finnhub/
+│   └── alpha_vantage/
+└── reference/
+    ├── companies.yaml        # US company intelligence (17 tickers)
+    └── companies_india.yaml  # Indian company intelligence (NSE top-10) (new)
 
-ui/              # Streamlit dashboard
-tests/           # Unit tests
-main.py          # Entry point (starts all agents)
-docker-compose.yml
+ui/app.py               # Streamlit dashboard (market selector, advisor, health, sources)
+main.py                 # Entry point — starts all three agents
+tests/                  # 92 unit tests; all green
+docs/ARCHITECTURE.md    # Full system design
 ```
 
-## Design Decisions
+---
 
-**Why LLM Wiki instead of RAG (ChromaDB)?**
-Traditional RAG re-derives knowledge from raw chunks on every query. The LLM Wiki pattern
-(Karpathy, April 2026) has Gemini incrementally compile incoming data into a persistent,
-interlinked markdown wiki. Knowledge compounds — cross-references are pre-built, contradictions
-pre-flagged, synthesis pre-written. Queries read pre-compiled pages instead of searching vectors.
-No embedding model download, no vector DB infrastructure — just markdown files on disk.
+## Pitch at a Glance
 
-**Why async queues instead of Kafka?**
-Same publish/subscribe pattern, zero infrastructure for a personal project.
-The architecture is message-bus agnostic — swapping in Kafka or Redis Streams
-requires only changing `core/queues.py`.
+**What is the product?**
+An AI investment advisor that teaches Indian retail investors what they need to know,
+grounds every answer in live market data, and tells them how much to trust each answer.
 
-**Why SQLite instead of PostgreSQL?**
-Single user, single machine. Same SQLAlchemy ORM — one line change to upgrade.
+**TAM:**
+100M+ Indians with ₹500+/month investable surplus. Active SIP folios: 7.9 Cr and growing
+at 20% YoY (AMFI, March 2026). Digital-first users already comfortable with UPI.
 
-**Why Gemini 1.5 Flash?**
-Only free LLM with a generous enough free tier (1M tokens/day) to run a
-scheduled personal project without hitting limits or paying anything.
+**Ease of adoption:**
+Zero setup for users — open a browser, answer 5 profile questions, start asking.
+SIP-first onboarding meets users where they already are. Hindi support removes the
+language barrier. Confidence scores remove the trust barrier.
 
-## LLM Wiki Operations
+**Monetisation (power users):**
+- **Free:** Basic SIP advice, market overview, tax guide, Q&A (up to 10 queries/day)
+- **Premium ₹99/month:** Portfolio tracking, personalised SIP optimisation,
+  goal-based projections (wedding / education / retirement), priority data refresh,
+  LTCG/STCG tax impact calculator
 
-The knowledge base has three main operations:
+**Moat:**
+The knowledge base compounds — it gets smarter every day the system runs, unlike a
+static chatbot. The Trust Layer (confidence scores + source provenance + version history)
+is a structural differentiator: no competitor explains *why* to trust their advice.
+Data network effect: the more users ask, the more insights are filed back into the wiki.
 
-1. **`ingest_to_wiki(articles, prices)`** — LLM reads new data and updates wiki pages
-   - Updates per-symbol entity pages (stocks/AAPL.md, stocks/MSFT.md)
-   - Updates market overview synthesis (overview.md)
-   - Rebuilds page catalog (index.md)
-   - Logs all operations (log.md)
+**12-month risks and mitigations:**
+| Risk | Mitigation |
+| --- | --- |
+| SEBI compliance — unlicensed financial advice | "Educational only" disclaimer on every answer; confidence rubric makes limitations explicit |
+| AMFI / RBI API reliability | Fetch-state tracking + graceful degradation + fallback to cached wiki pages |
+| Gemini rate limits at scale | 1M tokens/day free tier; per-query caching of wiki reads; upgrade path to paid tier |
+| User data privacy | All data local (SQLite file); no PII sent to LLM beyond what user explicitly types |
+| Hindi accuracy | Gemini native multilingual; answers reviewed for financial terminology accuracy |
 
-2. **`query_wiki(question)`** — LLM reads wiki to answer questions
-   - Reads index.md to find relevant pages
-   - Reads those pages for context
-   - Synthesizes answer from pre-compiled knowledge
-   - Files good answers back into insights/ for compounding
+---
 
-3. **`lint_wiki()`** — Periodic health-check (every 6 hours)
-   - Finds contradictions between pages
-   - Identifies stale or orphaned content
-   - Suggests missing cross-references
-   - Self-audits knowledge base integrity
+## For Developers
 
-## Operational tooling
+- **Dev setup:** `pip install -r requirements-dev.txt && pre-commit install`
+- **Tests:** `pytest` — 92 tests, all green. Never merge if this number drops.
+- **Linting:** `ruff check .` + `ruff format --check .` + `mypy core agents ui`
+- **One-shot data fetch:** `python scripts/run_data_fetch_once.py`
+- **Architecture:** `docs/ARCHITECTURE.md`
+- **Decisions log:** `PROJECT_TODO.md`
+- **Legacy modules:** `legacy/` — archived v1/v2 code with explanations
 
-- `python scripts/dedupe_sec_raw.py [--apply]` — SHA-256 dedupe for
-  `data/raw/sec/`. Dry-run by default; useful if the content-hash short-circuit
-  in `core/sec_client.py` ever regresses.
-- **Dev setup (ruff + mypy + pre-commit):** see `docs/DEV.md`. TL;DR
-  `pip install -r requirements-dev.txt && pre-commit install`.
-- `python scripts/run_data_fetch_once.py` — one-shot harness that calls every
-  data source once and prints a status table. Every source is wrapped in an
-  individual `asyncio.wait_for(...)` so one wedged API cannot hang the script.
-  Flags: `--only finnhub,fred_macro`, `--symbols AAPL,MSFT`, `--timeout 30`.
-- `python scripts/smoke_new_fetchers.py` — smoke-test the Finnhub and Alpha
-  Vantage clients against the live APIs.
-- `core/fetch_state.py` — SQLite-backed fetch cadence tracker (`fetch_runs`
-  table). Restarts no longer re-hammer every API; the ingest loop queries
-  `should_fetch(source, key, interval_hours=N)` before each heavy call.
-- `core/schemas.RawPayload` — canonical envelope enforced by the Alpha Vantage
-  and Finnhub clients. `wiki_ingest` understands both the new envelope and
-  legacy flat payloads already on disk.
-
-## Safety against stalled fetches
-
-Every slow data source is wrapped in two concentric timeouts:
-
-1. Per-HTTP-request: each client sets `httpx.AsyncClient(timeout=30.0)` and
-   uses `tenacity` with `stop_after_attempt(3)` for retries.
-2. Per-source in the ingest loop: `agents.ingest_agent._guarded(...)` uses
-   `asyncio.wait_for(coro, timeout=_HEAVY_FETCH_TIMEOUT_SECONDS)` so one wedged
-   API cannot block the 5-minute ingest cycle for more than 3 minutes.
-
-If a fetch times out, `FetchRun.last_error` is set to `timeout_or_exception`
-and the next cycle will try again after the configured interval.
-
-## Future Improvements
-
-- [ ] Swap async queues for Apache Kafka for distributed deployment
-- [ ] Add user-input queries via the UI (currently auto-generated)
-- [ ] Add portfolio tracking (user enters holdings, system monitors them)
-- [ ] Migrate to PostgreSQL for multi-user support
-- [ ] Add more data sources (SEC filings, earnings calendars)
-- [ ] Implement concept page auto-generation (sector analysis, market themes)
-
-## Legacy folders
-
-Everything carried over from the pre-v3 skeleton lives under `legacy/` —
-`legacy/api/`, `legacy/db/`, `legacy/frontend/`, `legacy/rag/`,
-`legacy/alembic/`, plus the deprecated stub agents (budget/expense/fraud/…)
-moved out of `agents/`. See `legacy/LEGACY.md` for a file-by-file map of what
-replaced each module in v3. Nothing in `core/`, `agents/{ingest,analysis,storage}_agent.py`,
-`ui/app.py`, or `main.py` imports from `legacy/`.
+> **Disclaimer:** This is a prototype built for educational and thesis purposes.
+> It does not constitute SEBI-registered financial advice. Always consult a licensed
+> financial advisor before making investment decisions.

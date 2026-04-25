@@ -78,6 +78,25 @@ TRUSTED_DOMAINS: set[str] = {
     # CNN (Fear & Greed)
     "production.dataviz.cnn.io",
     "cnn.com",
+    # ── Indian market sources ─────────────────────────────────────────────────
+    # NSE / BSE (official exchange data via Yahoo Finance proxy)
+    "nseindia.com",
+    "bseindia.com",
+    # AMFI — Association of Mutual Funds in India (official regulator data)
+    "api.mfapi.in",
+    "mfapi.in",
+    "amfiindia.com",
+    # Reserve Bank of India
+    "rbi.org.in",
+    "website.rbi.org.in",
+    "data.rbi.org.in",
+    "dbieold.rbi.org.in",
+    # Indian financial news (established outlets only)
+    "economictimes.indiatimes.com",
+    "livemint.com",
+    "business-standard.com",
+    "moneycontrol.com",
+    "financialexpress.com",
 }
 
 

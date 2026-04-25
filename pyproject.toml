@@ -114,6 +114,20 @@ module = "core.trust"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
+# core/fetchers_india.py — same pattern as core/fetchers.py: yfinance + httpx +
+# feedparser, all heavy third-party libs without stub coverage. Business logic is
+# covered by tests/test_india_fetchers.py (21 tests, all offline-safe).
+module = "core.fetchers_india"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# core/wiki_india.py — same shape as core/wiki.py: YAML dict manipulation,
+# Gemini prompt generation, and integration with core/wiki.py helpers.
+# Covered by tests/test_india_wiki.py (34 tests, all offline-safe).
+module = "core.wiki_india"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 # agents/* interact heavily with SQLAlchemy ORM which has complex runtime semantics.
 # The business logic is well-tested; defer deep typing until the core modules
 # are fully clean.
