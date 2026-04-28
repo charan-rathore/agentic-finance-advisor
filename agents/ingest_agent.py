@@ -31,9 +31,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from core.alpha_vantage_client import fetch_alpha_vantage_for_symbols
 from core.fetch_state import record_failure, record_success, should_fetch
 from core.fetchers import fetch_macro_indicators
+from core.fetchers_india import (
+    fetch_amfi_nav,
+    fetch_india_news_rss,
+    fetch_india_prices,
+    fetch_rbi_rates,
+)
 from core.finnhub_client import fetch_finnhub_for_symbols
 from core.models import MarketSnapshot, NewsArticle, init_db
-from core.queues import raw_market_queue, raw_news_queue
+from core.queues import raw_india_queue, raw_market_queue, raw_news_queue
 from core.sec_client import fetch_financial_data_for_symbols
 from core.settings import settings
 
@@ -340,6 +346,62 @@ async def run() -> None:
                     record_success(state_session, "fred")
                 else:
                     record_failure(state_session, "fred", error="timeout_or_exception")
+
+            # ── India: NSE prices + news (every ~5 min) ─────────────────────
+            if should_fetch(
+                state_session,
+                "india_prices",
+                interval_hours=settings.INDIA_PRICE_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] India NSE prices refresh...")
+                india_prices = await _guarded(fetch_india_prices(), label="India NSE prices")
+                india_news = await _guarded(fetch_india_news_rss(), label="India news RSS")
+                if india_prices is not None:
+                    record_success(state_session, "india_prices")
+                    # Publish to india queue so analysis agent can consume
+                    await raw_india_queue.put(
+                        {
+                            "type": "india_cycle",
+                            "prices": india_prices,
+                            "news_batches": india_news or [],
+                        }
+                    )
+                    logger.info(
+                        f"[Ingest Agent] India: {len(india_prices)} prices, "
+                        f"{len(india_news or [])} news batches -> queue"
+                    )
+                else:
+                    record_failure(state_session, "india_prices", error="timeout_or_exception")
+
+            # ── India: AMFI mutual fund NAVs (daily) ────────────────────────
+            if should_fetch(
+                state_session,
+                "india_amfi_nav",
+                interval_hours=settings.INDIA_MF_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] India AMFI NAV refresh...")
+                nav_records = await _guarded(fetch_amfi_nav(), label="India AMFI NAV")
+                if nav_records is not None:
+                    record_success(state_session, "india_amfi_nav")
+                    await raw_india_queue.put({"type": "india_nav", "nav_records": nav_records})
+                    logger.info(f"[Ingest Agent] India: {len(nav_records)} NAV records -> queue")
+                else:
+                    record_failure(state_session, "india_amfi_nav", error="timeout_or_exception")
+
+            # ── India: RBI policy rates (daily) ─────────────────────────────
+            if should_fetch(
+                state_session,
+                "india_rbi_rates",
+                interval_hours=settings.INDIA_RBI_FETCH_INTERVAL_HOURS,
+            ):
+                logger.info("[Ingest Agent] India RBI rates refresh...")
+                rbi_rates = await _guarded(fetch_rbi_rates(), label="India RBI rates")
+                if rbi_rates is not None:
+                    record_success(state_session, "india_rbi_rates")
+                    await raw_india_queue.put({"type": "india_rbi", "rbi_rates": rbi_rates})
+                    logger.info("[Ingest Agent] India: RBI rates -> queue")
+                else:
+                    record_failure(state_session, "india_rbi_rates", error="timeout_or_exception")
 
         logger.info(f"[Ingest Agent] Cycle done. Sleeping {settings.INGEST_INTERVAL_SECONDS}s...")
         await asyncio.sleep(settings.INGEST_INTERVAL_SECONDS)

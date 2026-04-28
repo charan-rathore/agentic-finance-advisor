@@ -10,13 +10,11 @@ No disk writes reach the real data/ directory — _iwrite is patched.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from core.wiki_india import (
-    _iread,
-    _iwrite,
     classify_investment_horizon,
     detect_beginner_intent_india,
     india_wiki_health,
@@ -61,26 +59,78 @@ class TestDetectBeginnerIntentIndia:
 
 
 class TestClassifyInvestmentHorizon:
+    """
+    The classifier returns exactly one of:
+    "short" | "intermediate" | "long" | "unknown"
+    """
+
     @pytest.mark.parametrize(
-        "question, expected",
+        "question",
         [
-            ("I need money in 6 months, where to park it?", "short_term"),
-            ("Best liquid fund for parking money", "short_term"),
-            ("I want to build wealth over 10 years for retirement", "long_term"),
-            ("5 year investment plan for children education", "long_term"),
-            ("SIP for wealth creation over long term", "long_term"),
-            ("What should I do with my savings?", "unknown"),
+            "I need money in 6 months, where to park it?",
+            "Best liquid fund for parking money",
+            "Where to invest for emergency fund in fixed deposit?",
+            "Looking for a t-bill investment",
+            "I need an overnight fund for parking money",
         ],
     )
-    def test_horizon_classification(self, question: str, expected: str):
-        assert classify_investment_horizon(question) == expected
+    def test_classifies_short(self, question: str) -> None:
+        assert classify_investment_horizon(question) == "short"
 
-    def test_long_term_wins_when_both_present(self):
-        # Ambiguous — both signals present; long wins when explicitly stated
-        q = "short term saving but planning for retirement long term"
-        result = classify_investment_horizon(q)
-        # Both signals → unknown (neither dominates unambiguously)
-        assert result == "unknown"
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "Best SIP plan for 3 years",
+            "ELSS fund for tax saving under 80c",
+            "I want to save tax and invest for a few years",
+            "Which index fund should I start a SIP in?",
+            "balanced fund for medium term goals",
+        ],
+    )
+    def test_classifies_intermediate(self, question: str) -> None:
+        assert classify_investment_horizon(question) == "intermediate"
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "I want to build wealth over 10 years for retirement",
+            "NPS investment for the long term",
+            "PPF account for children education corpus",
+            "Long-term wealth creation over a decade",
+            "Planning for retirement in 20 years",
+        ],
+    )
+    def test_classifies_long(self, question: str) -> None:
+        assert classify_investment_horizon(question) == "long"
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What should I do with my savings?",
+            "Is gold a good investment?",
+            "Compare HDFC Bank vs ICICI Bank",
+        ],
+    )
+    def test_classifies_unknown(self, question: str) -> None:
+        assert classify_investment_horizon(question) == "unknown"
+
+    def test_ambiguous_multiple_buckets_returns_unknown(self) -> None:
+        # "liquid" (short) + "retirement" (long) → both hit → unknown
+        q = "liquid fund for retirement planning long term"
+        assert classify_investment_horizon(q) == "unknown"
+
+    def test_return_values_are_exact_literals(self) -> None:
+        """Guard against returning legacy 'short_term' / 'long_term' strings."""
+        valid = {"short", "intermediate", "long", "unknown"}
+        probes = [
+            "liquid fund",
+            "sip for 3 years",
+            "nps retirement",
+            "what is investing",
+        ]
+        for q in probes:
+            result = classify_investment_horizon(q)
+            assert result in valid, f"Unexpected value {result!r} for question: {q!r}"
 
 
 # ── list_india_wiki_pages ─────────────────────────────────────────────────────
@@ -263,11 +313,19 @@ class TestIngestIndiaSmoke:
 
 class TestQueryIndiaSmoke:
     def test_returns_fallback_when_index_missing(self, tmp_path):
+        """
+        When the index is missing and no horizon is detected, the fallback message
+        should be returned without any LLM call.
+        The question must NOT trigger horizon routing (neutral question).
+        """
         from core import wiki_india
 
         with patch("core.wiki_india.settings") as mock_settings:
             mock_settings.INDIA_WIKI_DIR = str(tmp_path / "empty")
-            answer, consulted = asyncio.run(wiki_india.query_india("What is a SIP?"))
+            # "Is gold a good investment?" has no horizon signals → reaches fallback
+            answer, consulted = asyncio.run(
+                wiki_india.query_india("Is gold a good investment in India?")
+            )
 
         assert "still being built" in answer.lower() or "wait" in answer.lower()
         assert consulted == []
@@ -278,7 +336,7 @@ class TestQueryIndiaSmoke:
         # Write a minimal index and basics page
         (tmp_path / "basics").mkdir(parents=True)
         (tmp_path / "basics" / "finance_basics_india.md").write_text(
-            "---\npage_type: reference\nmarket: india\n---\n# Basics\nSIP stands for Systematic Investment Plan."
+            "---\npage_type: reference\nmarket: india\n---\n# Basics\nGold is a traditional asset."
         )
         (tmp_path / "index.md").write_text("# Index\n- basics/finance_basics_india.md\n")
 
@@ -291,14 +349,232 @@ class TestQueryIndiaSmoke:
             mock_settings.INDIA_WIKI_DIR = str(tmp_path)
             # First call = routing, returns the basics page path
             # Second call = actual answer generation
+            # "Is gold a good investment?" → unknown horizon → uses wiki pipeline
             mock_gemini.side_effect = [
                 "basics/finance_basics_india.md",
-                "SIP allows you to invest small amounts regularly.",
+                "Gold is a traditional store of value in India.",
             ]
-            answer, consulted = asyncio.run(wiki_india.query_india("What is a SIP?"))
+            answer, consulted = asyncio.run(
+                wiki_india.query_india("Is gold a good investment in India?")
+            )
 
-        assert "SIP" in answer or len(answer) > 0
+        assert len(answer) > 0
         assert isinstance(consulted, list)
+
+
+# ── Horizon routing inside query_india ────────────────────────────────────────
+
+
+class TestQueryIndiaHorizonRouting:
+    """
+    query_india must delegate to the specialist flows when a horizon is detected,
+    without ever calling the full LLM wiki-retrieval pipeline (i.e. call_gemini
+    for routing is NOT invoked on the first call).
+    """
+
+    def _run(self, coro):  # tiny helper to avoid repeating asyncio.run
+        return asyncio.run(coro)
+
+    def test_short_horizon_routes_to_short_term_flow(self, tmp_path):
+        from core import wiki_india
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(
+                wiki_india,
+                "short_term_india_answer",
+                return_value=("FD answer", ["basics/finance_basics_india.md"]),
+            ) as mock_short,
+            patch.object(wiki_india, "intermediate_india_answer") as mock_mid,
+            patch.object(wiki_india, "long_term_india_answer") as mock_long,
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = self._run(
+                wiki_india.query_india("Where to park money in liquid fund for 6 months?")
+            )
+
+        mock_short.assert_awaited_once()
+        mock_mid.assert_not_awaited()
+        mock_long.assert_not_awaited()
+        assert answer == "FD answer"
+
+    def test_intermediate_horizon_routes_to_intermediate_flow(self, tmp_path):
+        from core import wiki_india
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(wiki_india, "short_term_india_answer") as mock_short,
+            patch.object(
+                wiki_india,
+                "intermediate_india_answer",
+                return_value=("SIP answer", ["basics/finance_basics_india.md"]),
+            ) as mock_mid,
+            patch.object(wiki_india, "long_term_india_answer") as mock_long,
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = self._run(
+                wiki_india.query_india("Best ELSS fund to start a SIP for tax saving under 80c?")
+            )
+
+        mock_mid.assert_awaited_once()
+        mock_short.assert_not_awaited()
+        mock_long.assert_not_awaited()
+        assert answer == "SIP answer"
+
+    def test_long_horizon_routes_to_long_term_flow(self, tmp_path):
+        from core import wiki_india
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(wiki_india, "short_term_india_answer") as mock_short,
+            patch.object(wiki_india, "intermediate_india_answer") as mock_mid,
+            patch.object(
+                wiki_india,
+                "long_term_india_answer",
+                return_value=("NPS/PPF answer", ["basics/finance_basics_india.md"]),
+            ) as mock_long,
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = self._run(
+                wiki_india.query_india("How to invest in NPS for retirement over 20 years?")
+            )
+
+        mock_long.assert_awaited_once()
+        mock_short.assert_not_awaited()
+        mock_mid.assert_not_awaited()
+        assert answer == "NPS/PPF answer"
+
+    def test_unknown_horizon_uses_wiki_retrieval_pipeline(self, tmp_path):
+        """Unknown horizon falls through to the full LLM wiki pipeline."""
+        from core import wiki_india
+
+        (tmp_path / "basics").mkdir(parents=True)
+        (tmp_path / "basics" / "finance_basics_india.md").write_text(
+            "---\npage_type: reference\nmarket: india\n---\n# Basics\nSIP."
+        )
+        (tmp_path / "index.md").write_text("# Index\n- basics/finance_basics_india.md\n")
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(wiki_india, "short_term_india_answer") as mock_short,
+            patch.object(wiki_india, "intermediate_india_answer") as mock_mid,
+            patch.object(wiki_india, "long_term_india_answer") as mock_long,
+            patch.object(wiki_india, "call_gemini") as mock_gemini,
+            patch.object(wiki_india, "_iwrite"),
+            patch.object(wiki_india, "_iappend_log"),
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            mock_gemini.side_effect = [
+                "basics/finance_basics_india.md",
+                "Gold is a store of value.",
+            ]
+            answer, _ = asyncio.run(wiki_india.query_india("Is gold a good investment?"))
+
+        mock_short.assert_not_awaited()
+        mock_mid.assert_not_awaited()
+        mock_long.assert_not_awaited()
+        # call_gemini must have been called (routing + answer)
+        assert mock_gemini.call_count >= 1
+        assert len(answer) > 0
+
+
+# ── short_term_india_answer smoke test ────────────────────────────────────────
+
+
+class TestShortTermIndiaAnswer:
+    def test_returns_answer_and_consulted(self, tmp_path):
+        from core import wiki_india
+
+        (tmp_path / "basics").mkdir(parents=True)
+        (tmp_path / "basics" / "finance_basics_india.md").write_text(
+            "---\npage_type: reference\n---\n# Basics\nFD rates are linked to repo rate."
+        )
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(wiki_india, "call_gemini", return_value="Park in FD or liquid fund."),
+            patch.object(wiki_india, "_iwrite"),
+            patch.object(wiki_india, "_iappend_log"),
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = asyncio.run(
+                wiki_india.short_term_india_answer("Where to park ₹50,000 for 6 months?")
+            )
+
+        assert len(answer) > 0
+        assert isinstance(consulted, list)
+        assert "basics/finance_basics_india.md" in consulted
+
+    def test_sebi_disclaimer_in_prompt(self, tmp_path):
+        """The SEBI disclaimer constant must be non-empty."""
+        from core.wiki_india import _SEBI_DISCLAIMER
+
+        assert "SEBI" in _SEBI_DISCLAIMER
+        assert len(_SEBI_DISCLAIMER) > 20
+
+
+# ── intermediate_india_answer smoke test ──────────────────────────────────────
+
+
+class TestIntermediateIndiaAnswer:
+    def test_returns_answer_and_consulted(self, tmp_path):
+        from core import wiki_india
+
+        (tmp_path / "basics").mkdir(parents=True)
+        (tmp_path / "basics" / "finance_basics_india.md").write_text(
+            "---\npage_type: reference\n---\n# Basics\nSIP lets you invest small amounts."
+        )
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(
+                wiki_india,
+                "call_gemini",
+                return_value="Start a ₹2,000/month SIP in Nifty 50.",
+            ),
+            patch.object(wiki_india, "_iwrite"),
+            patch.object(wiki_india, "_iappend_log"),
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = asyncio.run(
+                wiki_india.intermediate_india_answer("Which ELSS fund for 80c tax saving?")
+            )
+
+        assert len(answer) > 0
+        assert isinstance(consulted, list)
+        assert "basics/finance_basics_india.md" in consulted
+
+
+# ── long_term_india_answer smoke test ─────────────────────────────────────────
+
+
+class TestLongTermIndiaAnswer:
+    def test_returns_answer_and_consulted(self, tmp_path):
+        from core import wiki_india
+
+        (tmp_path / "basics").mkdir(parents=True)
+        (tmp_path / "basics" / "finance_basics_india.md").write_text(
+            "---\npage_type: reference\n---\n# Basics\nNPS and PPF for retirement."
+        )
+
+        with (
+            patch("core.wiki_india.settings") as mock_settings,
+            patch.object(
+                wiki_india,
+                "call_gemini",
+                return_value="Open NPS Tier-I and PPF for long-term wealth.",
+            ),
+            patch.object(wiki_india, "_iwrite"),
+            patch.object(wiki_india, "_iappend_log"),
+        ):
+            mock_settings.INDIA_WIKI_DIR = str(tmp_path)
+            answer, consulted = asyncio.run(
+                wiki_india.long_term_india_answer("How do I build retirement corpus over 20 years?")
+            )
+
+        assert len(answer) > 0
+        assert isinstance(consulted, list)
+        assert "basics/finance_basics_india.md" in consulted
 
 
 # ── beginner_answer_india ─────────────────────────────────────────────────────

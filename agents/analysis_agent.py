@@ -30,9 +30,10 @@ from loguru import logger
 from textblob import TextBlob
 
 from core.fetchers import fetch_google_news_rss
-from core.queues import insights_queue, raw_market_queue, raw_news_queue
+from core.queues import insights_queue, raw_india_queue, raw_market_queue, raw_news_queue
 from core.settings import settings
 from core.wiki import ingest_to_wiki, lint_wiki, query_wiki
+from core.wiki_india import ingest_india
 from core.wiki_ingest import process_all_new_raw_files
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
@@ -128,6 +129,12 @@ async def run() -> None:
     news_buffer: deque = deque(maxlen=100)
     sentiment_buffer: deque = deque(maxlen=100)
 
+    # ── India buffers — accumulate across cycles, flushed into ingest_india() ─
+    india_prices_buf: list[dict] = []
+    india_nav_buf: list[dict] = []
+    india_rbi_buf: dict | None = None
+    india_news_buf: list[dict] = []
+
     last_analysis: float = 0.0
     last_lint: float = 0.0
     lint_interval_seconds = float(getattr(settings, "WIKI_LINT_INTERVAL_HOURS", 6)) * 3600
@@ -148,6 +155,43 @@ async def run() -> None:
             enriched = {**article, "sentiment_label": label, "sentiment_score": score}
             sentiment_buffer.append(enriched)
             new_articles.append(enriched)
+
+        # ── Drain India queue into local buffers ──────────────────────────────
+        while not raw_india_queue.empty():
+            msg = await raw_india_queue.get()
+            msg_type = msg.get("type", "")
+            if msg_type == "india_cycle":
+                india_prices_buf.extend(msg.get("prices", []))
+                india_news_buf.extend(msg.get("news_batches", []))
+            elif msg_type == "india_nav":
+                india_nav_buf.extend(msg.get("nav_records", []))
+            elif msg_type == "india_rbi":
+                # Always keep the most recent RBI snapshot
+                india_rbi_buf = msg.get("rbi_rates")
+
+        # ── Flush India buffers into wiki when we have any data ───────────────
+        if india_prices_buf or india_nav_buf or india_rbi_buf or india_news_buf:
+            logger.info(
+                f"[Analysis Agent] Triggering India wiki ingest "
+                f"({len(india_prices_buf)} prices, {len(india_nav_buf)} NAVs, "
+                f"rbi={'yes' if india_rbi_buf else 'no'}, "
+                f"{len(india_news_buf)} news batches)..."
+            )
+            try:
+                await ingest_india(
+                    prices=list(india_prices_buf),
+                    nav_records=list(india_nav_buf),
+                    rbi_rates=india_rbi_buf,
+                    news_batches=list(india_news_buf),
+                )
+                # Clear buffers only after a successful ingest
+                india_prices_buf.clear()
+                india_nav_buf.clear()
+                india_rbi_buf = None
+                india_news_buf.clear()
+            except Exception as e:
+                logger.error(f"[Analysis Agent] India wiki ingest failed: {e}")
+                # Do NOT clear buffers — retry on next cycle
 
         # ── Ingest batch into wiki when we have enough new articles ───────────
         if len(new_articles) >= ingest_batch_size:

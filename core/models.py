@@ -106,6 +106,28 @@ class SourceRegistry(Base):
     fetch_count = Column(Integer, default=1)
 
 
+class UserProfile(Base):
+    """
+    Single-user investor profile collected during onboarding.
+
+    First-row semantics: the application always reads/writes the row with
+    the lowest ``id``. Multi-user support can be added later by adding an
+    auth token column and filtering on it.
+    """
+
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, default="Investor")
+    monthly_income = Column(String(50), nullable=False)  # range label e.g. "₹50k–₹1L"
+    monthly_sip_budget = Column(String(50), nullable=False)  # range label e.g. "₹2k–₹5k"
+    risk_tolerance = Column(String(20), nullable=False)  # "low" | "medium" | "high"
+    tax_bracket_pct = Column(Float, nullable=False)  # 0.0 | 5.0 | 20.0 | 30.0
+    primary_goal = Column(String(100), nullable=False)  # free-form short phrase
+    horizon_pref = Column(String(20), nullable=False)  # "short" | "intermediate" | "long"
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class KnowledgeVersion(Base):
     """
     Audit trail for every wiki page update. One row per write to any

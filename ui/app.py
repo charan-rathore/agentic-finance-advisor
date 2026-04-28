@@ -18,11 +18,15 @@ import streamlit as st
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from sqlalchemy.orm import sessionmaker
+
 from agents.storage_agent import (
     get_latest_prices,
     get_recent_headlines,
     get_recent_insights,
 )
+from core.models import UserProfile, init_db
+from core.settings import settings
 from core.wiki import (
     beginner_answer,
     detect_beginner_intent,
@@ -30,6 +34,11 @@ from core.wiki import (
     query_wiki,
     raw_data_snapshot,
     wiki_health_snapshot,
+)
+from core.wiki_india import (
+    beginner_answer_india,
+    detect_beginner_intent_india,
+    query_india,
 )
 
 st.set_page_config(
@@ -44,7 +53,38 @@ st.caption(
     "LLM Wiki (Karpathy) · All free-tier"
 )
 
-# ── Sidebar: user profile + ask-anything box ────────────────────────────────
+# ── DB session (shared for this run) ─────────────────────────────────────────
+
+_engine = init_db(settings.DATABASE_URL)
+_Session = sessionmaker(bind=_engine)
+
+
+def _load_profile() -> UserProfile | None:
+    """Return the first UserProfile row, or None if the table is empty."""
+    with _Session() as s:
+        return s.query(UserProfile).order_by(UserProfile.id.asc()).first()
+
+
+def _save_profile(data: dict) -> None:
+    """Insert a new profile row (single-user: one row is enough)."""
+    with _Session() as s:
+        s.add(UserProfile(**data))
+        s.commit()
+
+
+def _profile_to_dict(p: UserProfile) -> dict:
+    return {
+        "name": p.name,
+        "monthly_income": p.monthly_income,
+        "monthly_sip_budget": p.monthly_sip_budget,
+        "risk_tolerance": p.risk_tolerance,
+        "tax_bracket_pct": p.tax_bracket_pct,
+        "primary_goal": p.primary_goal,
+        "horizon_pref": p.horizon_pref,
+    }
+
+
+# ── Sidebar: global ask-anything (US wiki) ───────────────────────────────────
 
 with st.sidebar:
     st.header("Ask the advisor")
@@ -103,7 +143,162 @@ if ask and question.strip():
 
 # ── Dashboard panels ────────────────────────────────────────────────────────
 
-dashboard_tab, health_tab = st.tabs(["Dashboard", "System Health"])
+dashboard_tab, india_tab, health_tab = st.tabs(["Dashboard", "🇮🇳 India Advisor", "System Health"])
+
+
+# ── India Advisor tab ────────────────────────────────────────────────────────
+
+with india_tab:
+    profile_row = _load_profile()
+
+    # ── Onboarding form (shown when no profile exists) ────────────────────
+    if profile_row is None:
+        st.header("👋 Welcome! Let's set up your investor profile")
+        st.caption(
+            "Answer 5 quick questions so the advisor can personalise its recommendations. "
+            "Your answers are stored locally only."
+        )
+
+        with st.form("onboarding_form"):
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                name = st.text_input("Your name (optional)", value="Investor")
+
+                monthly_income = st.selectbox(
+                    "Monthly income range",
+                    options=[
+                        "Below ₹25k",
+                        "₹25k–₹50k",
+                        "₹50k–₹1L",
+                        "₹1L–₹2L",
+                        "Above ₹2L",
+                    ],
+                    help="Approximate gross monthly income",
+                )
+
+                monthly_sip_budget = st.selectbox(
+                    "How much can you invest each month?",
+                    options=[
+                        "Below ₹1k",
+                        "₹1k–₹2k",
+                        "₹2k–₹5k",
+                        "₹5k–₹10k",
+                        "₹10k–₹25k",
+                        "Above ₹25k",
+                    ],
+                )
+
+            with col_b:
+                risk_tolerance = st.selectbox(
+                    "Risk appetite",
+                    options=["low", "medium", "high"],
+                    format_func=lambda x: {
+                        "low": "🟢 Low — I prefer safety over returns",
+                        "medium": "🟡 Medium — balanced approach",
+                        "high": "🔴 High — I can handle volatility",
+                    }[x],
+                )
+
+                primary_goal = st.selectbox(
+                    "Primary financial goal",
+                    options=[
+                        "Build emergency fund",
+                        "Save tax (80C)",
+                        "Grow wealth (SIP)",
+                        "Retirement / NPS",
+                        "Child education",
+                        "Buy a house",
+                        "Other",
+                    ],
+                )
+
+                horizon_pref = st.selectbox(
+                    "Investment time horizon",
+                    options=["short", "intermediate", "long"],
+                    format_func=lambda x: {
+                        "short": "Short (≤ 1 year)",
+                        "intermediate": "Medium (2–5 years)",
+                        "long": "Long (5+ years)",
+                    }[x],
+                )
+
+                tax_bracket_pct = st.selectbox(
+                    "Income tax slab",
+                    options=[0.0, 5.0, 20.0, 30.0],
+                    format_func=lambda x: f"{int(x)}%",
+                    help="Your marginal income tax rate — used to personalise ELSS / NPS suggestions",
+                )
+
+            submitted = st.form_submit_button("Save profile & continue", type="primary")
+
+        if submitted:
+            _save_profile(
+                {
+                    "name": name.strip() or "Investor",
+                    "monthly_income": monthly_income,
+                    "monthly_sip_budget": monthly_sip_budget,
+                    "risk_tolerance": risk_tolerance,
+                    "tax_bracket_pct": float(tax_bracket_pct),
+                    "primary_goal": primary_goal,
+                    "horizon_pref": horizon_pref,
+                }
+            )
+            st.success("✅ Profile saved! Refreshing…")
+            st.rerun()
+
+    else:
+        # ── Profile exists — show advisor UI ─────────────────────────────
+        profile_dict = _profile_to_dict(profile_row)
+
+        with st.expander(
+            f"👤 {profile_row.name}'s profile  "
+            f"({profile_row.horizon_pref} horizon · {profile_row.risk_tolerance} risk · "
+            f"{profile_row.primary_goal})",
+            expanded=False,
+        ):
+            cols = st.columns(3)
+            cols[0].metric("Monthly income", profile_row.monthly_income)
+            cols[1].metric("SIP budget", profile_row.monthly_sip_budget)
+            cols[2].metric("Tax bracket", f"{int(profile_row.tax_bracket_pct)}%")
+            if st.button("Reset profile", key="reset_profile"):
+                with _Session() as s:
+                    s.query(UserProfile).delete()
+                    s.commit()
+                st.rerun()
+
+        st.header("🇮🇳 Ask the India Advisor")
+        india_q = st.text_area(
+            "Your question (Indian markets, SIP, ELSS, NPS, PPF…)",
+            placeholder="e.g. Which index fund should I start with given my risk tolerance?",
+            height=110,
+            key="india_question",
+        )
+        india_ask = st.button("Ask India Advisor", type="primary", key="india_ask")
+
+        if india_ask and india_q.strip():
+            is_beginner = detect_beginner_intent_india(india_q)
+            badge = "🧑‍🏫 Beginner" if is_beginner else "📊 Advisor"
+            st.subheader(f"{badge}: {india_q.strip()[:80]}")
+
+            with st.spinner("Consulting the India wiki…"):
+                try:
+                    if is_beginner:
+                        ans, sources = asyncio.run(beginner_answer_india(india_q.strip()))
+                    else:
+                        ans, sources = asyncio.run(
+                            query_india(india_q.strip(), profile=profile_dict)
+                        )
+                except Exception as e:
+                    st.error(f"India advisor failed: {e}")
+                    ans, sources = "", []
+
+            if ans:
+                st.markdown(ans)
+                if sources:
+                    with st.expander("Sources consulted"):
+                        for p in sources:
+                            st.markdown(f"- `{p}`")
 
 with dashboard_tab:
     st.header("Current Market Prices")

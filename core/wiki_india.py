@@ -166,12 +166,11 @@ def detect_beginner_intent_india(question: str) -> bool:
 
 # ── Investment horizon classification ─────────────────────────────────────────
 
-_SHORT_TERM_SIGNALS = (
+_SHORT_TERM_SIGNALS: tuple[str, ...] = (
     "short term",
     "short-term",
-    "1 year",
-    "2 year",
     "6 month",
+    "few months",
     "emergency",
     "liquid",
     "fd",
@@ -179,41 +178,346 @@ _SHORT_TERM_SIGNALS = (
     "parking money",
     "need money soon",
     "next year",
-    "few months",
+    "within a year",
+    "t-bill",
+    "treasury bill",
+    "overnight fund",
+    "within 1 year",
+    "less than a year",
 )
-_LONG_TERM_SIGNALS = (
+
+_INTERMEDIATE_TERM_SIGNALS: tuple[str, ...] = (
+    "3 year",
+    "4 year",
+    "5 year",
+    "medium term",
+    "medium-term",
+    "sip",
+    "systematic investment",
+    "elss",
+    "index fund",
+    "tax saving",
+    "80c",
+    "save tax",
+    "balanced fund",
+    "hybrid fund",
+    "2-3 year",
+    "3-5 year",
+    "few years",
+    "couple of years",
+)
+
+_LONG_TERM_SIGNALS: tuple[str, ...] = (
     "long term",
     "long-term",
     "retirement",
-    "5 year",
     "10 year",
+    "15 year",
     "20 year",
+    "25 year",
+    "30 year",
     "future",
     "wealth creation",
     "build wealth",
     "corpus",
-    "goal",
+    "nps",
+    "ppf",
+    "public provident fund",
     "children education",
     "child education",
     "marriage",
+    "decade",
+    "generations",
 )
+
+_SEBI_DISCLAIMER = (
+    "⚠️ This is for educational purposes only. "
+    "Please verify with a SEBI-registered investment advisor before investing."
+)
+
+
+# ── User profile context helper ───────────────────────────────────────────────
+
+
+def _profile_block(profile: dict | None) -> str:
+    """
+    Render a USER PROFILE section suitable for injection into Gemini prompts.
+
+    Returns an empty string when *profile* is ``None`` so every call site can
+    unconditionally interpolate ``{_profile_block(profile)}`` without an extra
+    ``if`` branch.
+    """
+    if not profile:
+        return ""
+    lines = [
+        "\nUSER PROFILE (personalise the answer to these facts):",
+        f"- Monthly income range : {profile.get('monthly_income', 'unknown')}",
+        f"- Monthly SIP budget   : {profile.get('monthly_sip_budget', 'unknown')}",
+        f"- Risk tolerance       : {profile.get('risk_tolerance', 'unknown')}",
+        f"- Tax bracket          : {profile.get('tax_bracket_pct', 'unknown')}%",
+        f"- Primary goal         : {profile.get('primary_goal', 'unknown')}",
+        f"- Preferred horizon    : {profile.get('horizon_pref', 'unknown')}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def classify_investment_horizon(question: str) -> str:
     """
-    Classify user intent as 'short_term', 'long_term', or 'unknown'.
+    Classify the investment time-horizon implied by *question*.
 
-    Used by ingest and query to select appropriate product recommendations.
-    Short term → liquid funds, FD, arbitrage. Long term → equity, ELSS, index.
+    Returns one of: ``"short"`` | ``"intermediate"`` | ``"long"`` | ``"unknown"``.
+
+    Rules (all rule-based, no LLM):
+    - Exactly one dominant bucket → return that bucket.
+    - Multiple buckets or no match → ``"unknown"``.
+
+    Horizon → product mapping:
+    - ``short``        → FD / liquid funds / T-bills (≤ 1 year)
+    - ``intermediate`` → SIP / ELSS / index funds (2–5 years)
+    - ``long``         → NPS / PPF / long-term equity (5+ years)
     """
     q = question.lower()
     short = any(s in q for s in _SHORT_TERM_SIGNALS)
+    intermediate = any(s in q for s in _INTERMEDIATE_TERM_SIGNALS)
     long_ = any(s in q for s in _LONG_TERM_SIGNALS)
-    if long_ and not short:
-        return "long_term"
-    if short and not long_:
-        return "short_term"
-    return "unknown"
+
+    buckets_hit = sum([short, intermediate, long_])
+    if buckets_hit != 1:
+        return "unknown"
+    if short:
+        return "short"
+    if intermediate:
+        return "intermediate"
+    return "long"
+
+
+# ── Horizon-specific answer flows ────────────────────────────────────────────
+
+
+async def short_term_india_answer(
+    question: str, profile: dict | None = None
+) -> tuple[str, list[str]]:
+    """
+    Answer a short-horizon question (≤ 1 year) with FD / liquid / T-bill framing.
+
+    Reads the basics primer and RBI macro page for context.
+    Returns (answer_text, pages_consulted).
+    """
+    primer = _iread("basics/finance_basics_india.md")
+    rbi_page = _iread("macro/rbi_rates.md")
+
+    consulted: list[str] = []
+    context_parts: list[str] = []
+    if primer:
+        consulted.append("basics/finance_basics_india.md")
+        context_parts.append(f"### Finance Basics:\n{primer[:2000]}")
+    if rbi_page:
+        consulted.append("macro/rbi_rates.md")
+        context_parts.append(f"### RBI Rates & Policy:\n{rbi_page[:1500]}")
+
+    context = "\n\n".join(context_parts) or "(basics not loaded yet)"
+
+    prompt = f"""You are a concise, friendly personal finance educator for Indian investors.
+The user has a SHORT-TERM investment horizon (up to 1 year).
+{_profile_block(profile)}
+USER QUESTION: {question}
+
+KNOWLEDGE BASE:
+{context}
+
+Answer in three focused sections:
+
+## Suitable short-term instruments
+Explain each in 2–3 plain sentences using ₹ amounts and current approximate rates:
+- Fixed Deposits (FD) at major banks / small finance banks
+- Liquid mutual funds (very low risk, same-day redemption)
+- RBI Floating Rate Savings Bonds / T-bills (91-day, 182-day, 364-day)
+If the RBI repo rate is mentioned in the knowledge base, explain how it affects FD rates.
+Tailor ₹ examples to the user's SIP budget and income if the USER PROFILE is present.
+
+## Instruments to AVOID for this horizon
+2–3 bullet points on why equity / ELSS / long-duration debt are unsuitable for ≤ 1 year.
+
+## Getting started (step by step)
+A numbered checklist of 3–5 concrete steps. Use specific ₹ amounts.
+Example: "Park ₹1 lakh in a liquid fund via Zerodha Coin; same-day withdrawal if needed."
+
+Keep it under 400 words. Use ₹ for all amounts.
+
+Finish with: "{_SEBI_DISCLAIMER}"
+
+WRITE THE ANSWER NOW (markdown only):"""
+
+    answer = await call_gemini(prompt)
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
+    insight = (
+        f"# Short-Term Insight: {question[:80]}\n\n{answer}\n\n"
+        f"---\n*Sources: {', '.join(consulted)}*\n"
+        f"*Flow: short_term_india_answer | Generated: {timestamp} UTC*\n"
+        f"*{_SEBI_DISCLAIMER}*\n"
+    )
+    _iwrite(f"insights/short_{timestamp}.md", insight)
+    _iappend_log(f"short_term | \"{question[:60]}\" | consulted: {', '.join(consulted)}")
+
+    return answer, consulted
+
+
+async def intermediate_india_answer(
+    question: str, profile: dict | None = None
+) -> tuple[str, list[str]]:
+    """
+    Answer an intermediate-horizon question (2–5 years) with SIP / ELSS / index framing.
+
+    Reads the basics primer, any ELSS / mutual fund pages, and the overview.
+    Returns (answer_text, pages_consulted).
+    """
+    primer = _iread("basics/finance_basics_india.md")
+    tax_guide = _iread("basics/tax_india.md")
+    overview = _iread("overview.md")
+
+    consulted: list[str] = []
+    context_parts: list[str] = []
+    if primer:
+        consulted.append("basics/finance_basics_india.md")
+        context_parts.append(f"### Finance Basics:\n{primer[:2000]}")
+    if tax_guide:
+        consulted.append("basics/tax_india.md")
+        context_parts.append(f"### Tax Guide:\n{tax_guide[:1200]}")
+    if overview:
+        consulted.append("overview.md")
+        context_parts.append(f"### Market Overview:\n{overview[:800]}")
+
+    context = "\n\n".join(context_parts) or "(basics not loaded yet)"
+
+    prompt = f"""You are a concise, friendly personal finance educator for Indian investors.
+The user has an INTERMEDIATE investment horizon (roughly 2–5 years).
+{_profile_block(profile)}
+USER QUESTION: {question}
+
+KNOWLEDGE BASE:
+{context}
+
+Answer in three focused sections:
+
+## Suitable medium-term instruments
+Explain each in 2–3 sentences with ₹ examples:
+- SIP (Systematic Investment Plan) in Nifty 50 / Nifty Next 50 index funds
+- ELSS (Equity Linked Savings Scheme) — tax benefit under Section 80C, 3-year lock-in
+- Balanced / Hybrid funds for moderate risk tolerance
+Explain what SIP is for someone who may not know it yet.
+Tailor ₹ amounts to the user's SIP budget and tax bracket if the USER PROFILE is present.
+
+## Tax efficiency tips
+1–2 bullet points: ELSS saves up to ₹46,800/year in taxes (30% slab on ₹1.5L 80C limit).
+Mention LTCG (Long-Term Capital Gains) tax on equity: 10% above ₹1 lakh/year.
+If the user's tax bracket is in the profile, personalise the saving amount.
+
+## Getting started (step by step)
+A numbered checklist of 3–5 concrete steps. Example:
+"Start a ₹2,000/month SIP in a Nifty 50 index fund via Kuvera or Zerodha Coin."
+Cover: emergency fund first → 80C ELSS SIP → plain index SIP for remaining goal.
+
+Keep it under 450 words. Use ₹ for all amounts.
+
+Finish with: "{_SEBI_DISCLAIMER}"
+
+WRITE THE ANSWER NOW (markdown only):"""
+
+    answer = await call_gemini(prompt)
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
+    insight = (
+        f"# Intermediate-Term Insight: {question[:80]}\n\n{answer}\n\n"
+        f"---\n*Sources: {', '.join(consulted)}*\n"
+        f"*Flow: intermediate_india_answer | Generated: {timestamp} UTC*\n"
+        f"*{_SEBI_DISCLAIMER}*\n"
+    )
+    _iwrite(f"insights/intermediate_{timestamp}.md", insight)
+    _iappend_log(f"intermediate | \"{question[:60]}\" | consulted: {', '.join(consulted)}")
+
+    return answer, consulted
+
+
+async def long_term_india_answer(
+    question: str, profile: dict | None = None
+) -> tuple[str, list[str]]:
+    """
+    Answer a long-horizon question (5+ years) with NPS / PPF / long-term equity framing.
+
+    Reads the basics primer, tax guide, and market overview for context.
+    Returns (answer_text, pages_consulted).
+    """
+    primer = _iread("basics/finance_basics_india.md")
+    tax_guide = _iread("basics/tax_india.md")
+    overview = _iread("overview.md")
+
+    consulted: list[str] = []
+    context_parts: list[str] = []
+    if primer:
+        consulted.append("basics/finance_basics_india.md")
+        context_parts.append(f"### Finance Basics:\n{primer[:2000]}")
+    if tax_guide:
+        consulted.append("basics/tax_india.md")
+        context_parts.append(f"### Tax Guide:\n{tax_guide[:1500]}")
+    if overview:
+        consulted.append("overview.md")
+        context_parts.append(f"### Market Overview:\n{overview[:800]}")
+
+    context = "\n\n".join(context_parts) or "(basics not loaded yet)"
+
+    prompt = f"""You are a concise, friendly personal finance educator for Indian investors.
+The user has a LONG-TERM investment horizon (5 years or more).
+{_profile_block(profile)}
+USER QUESTION: {question}
+
+KNOWLEDGE BASE:
+{context}
+
+Answer in three focused sections:
+
+## Power of long-term compounding in India
+Explain compounding in 2–3 plain sentences with a realistic ₹ example.
+Example: "₹5,000/month SIP in a Nifty 50 index fund over 20 years at 12% CAGR
+could grow to approximately ₹50 lakh (historical average; past returns ≠ future returns)."
+Use realistic numbers grounded in Indian market history; never guarantee returns.
+Tailor the ₹ SIP amount to the user's monthly SIP budget if the USER PROFILE is present.
+
+## Suitable long-term instruments
+Explain each in 2–3 sentences:
+- NPS (National Pension System) — tax deduction under 80CCD(1B), up to ₹50,000 extra
+- PPF (Public Provident Fund) — government-backed, 15-year lock-in, tax-free on maturity
+- Nifty 50 / Nifty Next 50 index funds via long-horizon SIP
+- Direct equity (only for experienced investors — briefly note the risk)
+Mention that diversification across NPS + PPF + equity SIP is the standard long-term stack.
+
+## Getting started (step by step)
+A numbered checklist of 4–6 concrete steps in order of priority:
+1. Emergency fund (3–6 months expenses in liquid fund)
+2. Term insurance (pure protection, not ULIP)
+3. NPS Tier-I account (₹500/month minimum, additional 80CCD(1B) benefit)
+4. PPF account at bank / post office (₹500–₹1.5L/year)
+5. Nifty 50 index fund SIP for remaining investable surplus
+
+Keep it under 500 words. Use ₹ for all amounts.
+
+Finish with: "{_SEBI_DISCLAIMER}"
+
+WRITE THE ANSWER NOW (markdown only):"""
+
+    answer = await call_gemini(prompt)
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
+    insight = (
+        f"# Long-Term Insight: {question[:80]}\n\n{answer}\n\n"
+        f"---\n*Sources: {', '.join(consulted)}*\n"
+        f"*Flow: long_term_india_answer | Generated: {timestamp} UTC*\n"
+        f"*{_SEBI_DISCLAIMER}*\n"
+    )
+    _iwrite(f"insights/long_{timestamp}.md", insight)
+    _iappend_log(f"long_term | \"{question[:60]}\" | consulted: {', '.join(consulted)}")
+
+    return answer, consulted
 
 
 # ── Operation 1: Ingest → India wiki ─────────────────────────────────────────
@@ -502,9 +806,24 @@ WRITE THE OVERVIEW NOW (markdown only):"""
 # ── Operation 2: Query the India wiki ────────────────────────────────────────
 
 
-async def query_india(question: str) -> tuple[str, list[str]]:
+async def query_india(question: str, profile: dict | None = None) -> tuple[str, list[str]]:
     """
     Answer a question about Indian finance using the India wiki.
+
+    Routing priority:
+    1. ``beginner`` questions → ``beginner_answer_india`` (must be handled by the caller
+       before reaching here, but ``query_india`` delegates gracefully if called directly).
+    2. Detected horizon ``short`` → ``short_term_india_answer``
+    3. Detected horizon ``intermediate`` → ``intermediate_india_answer``
+    4. Detected horizon ``long`` → ``long_term_india_answer``
+    5. ``unknown`` horizon → full LLM wiki-retrieval pipeline (original behaviour).
+
+    Args:
+        question: User's natural language question.
+        profile:  Optional dict with keys matching ``UserProfile`` fields
+                  (monthly_income, monthly_sip_budget, risk_tolerance,
+                  tax_bracket_pct, primary_goal, horizon_pref). When present,
+                  the profile context is injected into every Gemini prompt.
 
     Mirrors core/wiki.query_wiki but routes to data/wiki_india/ and
     uses Indian-context answer prompts (INR, SEBI, AMFI, SIP framing).
@@ -512,6 +831,22 @@ async def query_india(question: str) -> tuple[str, list[str]]:
     Returns (answer_text, list_of_pages_consulted).
     Good answers are filed back into data/wiki_india/insights/.
     """
+    # ── Horizon-based fast-path routing ──────────────────────────────────────
+    # Let the stored horizon_pref override question-level signals when present
+    # so the user's explicit preference wins.
+    horizon_from_profile = (profile or {}).get("horizon_pref", "")
+    horizon = (
+        horizon_from_profile if horizon_from_profile else classify_investment_horizon(question)
+    )
+
+    if horizon == "short":
+        return await short_term_india_answer(question, profile=profile)
+    if horizon == "intermediate":
+        return await intermediate_india_answer(question, profile=profile)
+    if horizon == "long":
+        return await long_term_india_answer(question, profile=profile)
+
+    # ── Full wiki-retrieval pipeline for unknown horizon ──────────────────────
     index_content = _iread("index.md")
     overview_content = _iread("overview.md")
 
@@ -558,7 +893,6 @@ No other text."""
         loaded["overview.md"] = overview_content
 
     # Always include basics primer for education-heavy queries
-    horizon = classify_investment_horizon(question)
     basics_path = "basics/finance_basics_india.md"
     if basics_path not in consulted:
         basics = _iread(basics_path)
@@ -570,7 +904,7 @@ No other text."""
     # ── Step 3: Generate the answer ───────────────────────────────────────────
     answer_prompt = f"""You are a concise, friendly personal finance AI advisor focused on India.
 Answer the question below using ONLY the wiki content provided.
-
+{_profile_block(profile)}
 QUESTION: {question}
 INVESTMENT HORIZON DETECTED: {horizon}
 
@@ -581,10 +915,11 @@ Instructions:
 - Use ₹ (INR) for all amounts — never use $ or USD
 - Reference SEBI, AMFI, NSE/BSE, and RBI where relevant
 - Mention SIP as the default starting mechanism for equity investments
-- For {horizon} horizon: {'recommend liquid funds, FD, or short-duration debt' if horizon == 'short_term' else 'recommend index funds, ELSS, or diversified equity' if horizon == 'long_term' else 'ask the user about their investment timeline before making specific recommendations'}
+- Ask the user about their investment timeline before making specific recommendations
 - Keep answers to 3–4 paragraphs; be specific, cite data from the wiki
 - Do not invent numbers. Always phrase historical returns as historical averages
-- End with: "⚠️ This is for educational purposes only. Please verify with a SEBI-registered advisor before investing."
+- If a USER PROFILE is present above, personalise ₹ amounts to the stated SIP budget
+- End with: "{_SEBI_DISCLAIMER}"
 
 YOUR RESPONSE:"""
 
