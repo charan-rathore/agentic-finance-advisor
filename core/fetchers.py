@@ -33,7 +33,34 @@ import yfinance as yf
 from fredapi import Fred
 from loguru import logger
 
+from core.models import init_db
 from core.settings import settings
+from core.trust import register_source
+
+
+def _get_engine() -> object:
+    """Return a short-lived SQLAlchemy engine for source registration calls."""
+    return init_db(settings.DATABASE_URL)
+
+
+def _schedule_registration(url: str, source_name: str, source_type: str) -> None:
+    """Fire-and-forget: schedule a register_source call on the running event loop.
+
+    Uses get_event_loop().create_task so the registration never blocks the
+    fetcher and is silently skipped in sync/test contexts that have no loop.
+    """
+    try:
+        import asyncio as _asyncio
+
+        async def _register() -> None:
+            try:
+                register_source(_get_engine(), url, source_name, source_type)
+            except Exception as exc:  # pragma: no cover
+                logger.debug(f"[Trust] register_source failed for {url}: {exc}")
+
+        _asyncio.get_event_loop().create_task(_register())
+    except RuntimeError:
+        pass  # no running loop — skip registration in sync/test contexts
 
 
 def _get_timestamp() -> str:
@@ -106,6 +133,13 @@ async def fetch_macro_indicators() -> Path | None:
         filename = f"macro_indicators_{_get_timestamp()}.json"
         filepath = Path(settings.RAW_DATA_DIR) / filename
         saved_path = await _save_json(filepath, macro_data)
+
+        # Register each successfully fetched FRED series URL in the source registry
+        for _sid in indicators.values():
+            if _sid in {v["series_id"] for v in macro_data["indicators"].values()}:
+                _schedule_registration(
+                    f"https://fred.stlouisfed.org/series/{_sid}", "FRED", "api"
+                )
 
         logger.info(f"[FRED] Saved macro indicators: {len(macro_data['indicators'])} series")
         return saved_path
@@ -245,6 +279,7 @@ async def fetch_google_news_rss(symbols: list[str]) -> list[Path]:
             saved_path = await _save_json(filepath, news_data)
             results.append(saved_path)
 
+            _schedule_registration(url, "Google News RSS", "rss")
             logger.info(f"[GoogleNews] Saved {len(articles)} articles for {symbol}")
 
             # Rate limiting
@@ -316,6 +351,7 @@ async def fetch_vix_and_fear_greed() -> Path | None:
                             else "Extreme Greed"
                         ),
                     }
+                    _schedule_registration(fear_greed_url, "CNN Fear & Greed", "api")
         except Exception as e:
             logger.warning(f"[MarketSentiment] Could not fetch Fear & Greed: {e}")
 
