@@ -25,6 +25,7 @@ from agents.storage_agent import (
     get_recent_headlines,
     get_recent_insights,
 )
+from core.fetchers_india import fetch_amfi_nav, fetch_india_prices, fetch_rbi_rates
 from core.models import UserProfile, init_db
 from core.settings import settings
 from core.wiki import (
@@ -84,6 +85,24 @@ def _profile_to_dict(p: UserProfile) -> dict:
     }
 
 
+# ── India dashboard cached loaders ───────────────────────────────────────────
+
+
+@st.cache_data(ttl=300)
+def _load_india_prices() -> list[dict]:
+    return asyncio.run(fetch_india_prices())
+
+
+@st.cache_data(ttl=3600)
+def _load_amfi_nav() -> list[dict]:
+    return asyncio.run(fetch_amfi_nav())
+
+
+@st.cache_data(ttl=3600)
+def _load_rbi_rates() -> dict:
+    return asyncio.run(fetch_rbi_rates())
+
+
 # ── Sidebar: global ask-anything (US wiki) ───────────────────────────────────
 
 with st.sidebar:
@@ -107,6 +126,13 @@ with st.sidebar:
     st.caption(
         "The advisor reads the wiki under `data/wiki/` and grounds every answer "
         "in the latest ingested prices, news, and SEC filings."
+    )
+
+    st.divider()
+    hindi_mode = st.checkbox(
+        "हिंदी में जवाब दें (Answer in Hindi)",
+        value=False,
+        help="India Advisor answers will be in Hindi (Devanagari script).",
     )
 
 
@@ -149,6 +175,65 @@ dashboard_tab, india_tab, health_tab = st.tabs(["Dashboard", "🇮🇳 India Adv
 # ── India Advisor tab ────────────────────────────────────────────────────────
 
 with india_tab:
+    st.subheader("🇮🇳 Indian Market Overview")
+
+    # ── Row 1: NSE stock prices ───────────────────────────────────────────────
+    try:
+        india_prices = _load_india_prices()
+        if india_prices:
+            price_rows = [
+                {
+                    "Symbol": r["symbol"],
+                    "Price (₹)": r["price_inr"],
+                    "Change%": r.get("change_pct", "N/A"),
+                }
+                for r in india_prices
+            ]
+            st.dataframe(price_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No NSE price data available yet.")
+    except Exception:
+        st.warning("Live data unavailable — using cached wiki data")
+
+    # ── Row 2: Mutual fund NAVs ───────────────────────────────────────────────
+    try:
+        amfi_navs = _load_amfi_nav()
+        if amfi_navs:
+            nav_rows = [
+                {
+                    "Scheme": r.get("scheme_name") or r.get("friendly_name", ""),
+                    "NAV (₹)": r["nav"],
+                    "Date": r["nav_date"],
+                }
+                for r in amfi_navs
+            ]
+            st.dataframe(nav_rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("No mutual fund NAV data available yet.")
+    except Exception:
+        st.warning("Live data unavailable — using cached wiki data")
+
+    # ── Row 3: RBI macro ─────────────────────────────────────────────────────
+    try:
+        rbi = _load_rbi_rates()
+        rbi_col1, rbi_col2, rbi_col3 = st.columns(3)
+        rbi_col1.metric(
+            "Repo Rate",
+            f"{rbi.get('repo_rate_pct', 'N/A')}%",
+        )
+        rbi_col2.metric(
+            "CPI India",
+            str(rbi.get("cpi_pct", "N/A")),
+        )
+        rbi_col3.metric(
+            "INR/USD",
+            str(rbi.get("inr_usd", "N/A")),
+        )
+    except Exception:
+        st.warning("Live data unavailable — using cached wiki data")
+
+    st.divider()
+
     profile_row = _load_profile()
 
     # ── Onboarding form (shown when no profile exists) ────────────────────
@@ -287,7 +372,11 @@ with india_tab:
                         ans, sources = asyncio.run(beginner_answer_india(india_q.strip()))
                     else:
                         ans, sources = asyncio.run(
-                            query_india(india_q.strip(), profile=profile_dict)
+                            query_india(
+                                india_q.strip(),
+                                profile=profile_dict,
+                                hindi=hindi_mode,
+                            )
                         )
                 except Exception as e:
                     st.error(f"India advisor failed: {e}")

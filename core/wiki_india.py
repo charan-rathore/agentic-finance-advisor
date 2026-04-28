@@ -295,7 +295,7 @@ def classify_investment_horizon(question: str) -> str:
 
 
 async def short_term_india_answer(
-    question: str, profile: dict | None = None
+    question: str, profile: dict | None = None, hindi: bool = False
 ) -> tuple[str, list[str]]:
     """
     Answer a short-horizon question (≤ 1 year) with FD / liquid / T-bill framing.
@@ -348,6 +348,8 @@ Finish with: "{_SEBI_DISCLAIMER}"
 
 WRITE THE ANSWER NOW (markdown only):"""
 
+    if hindi:
+        prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(prompt)
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
@@ -364,7 +366,7 @@ WRITE THE ANSWER NOW (markdown only):"""
 
 
 async def intermediate_india_answer(
-    question: str, profile: dict | None = None
+    question: str, profile: dict | None = None, hindi: bool = False
 ) -> tuple[str, list[str]]:
     """
     Answer an intermediate-horizon question (2–5 years) with SIP / ELSS / index framing.
@@ -424,6 +426,8 @@ Finish with: "{_SEBI_DISCLAIMER}"
 
 WRITE THE ANSWER NOW (markdown only):"""
 
+    if hindi:
+        prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(prompt)
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
@@ -440,7 +444,7 @@ WRITE THE ANSWER NOW (markdown only):"""
 
 
 async def long_term_india_answer(
-    question: str, profile: dict | None = None
+    question: str, profile: dict | None = None, hindi: bool = False
 ) -> tuple[str, list[str]]:
     """
     Answer a long-horizon question (5+ years) with NPS / PPF / long-term equity framing.
@@ -505,6 +509,8 @@ Finish with: "{_SEBI_DISCLAIMER}"
 
 WRITE THE ANSWER NOW (markdown only):"""
 
+    if hindi:
+        prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(prompt)
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
@@ -806,7 +812,9 @@ WRITE THE OVERVIEW NOW (markdown only):"""
 # ── Operation 2: Query the India wiki ────────────────────────────────────────
 
 
-async def query_india(question: str, profile: dict | None = None) -> tuple[str, list[str]]:
+async def query_india(
+    question: str, profile: dict | None = None, hindi: bool = False
+) -> tuple[str, list[str]]:
     """
     Answer a question about Indian finance using the India wiki.
 
@@ -840,11 +848,11 @@ async def query_india(question: str, profile: dict | None = None) -> tuple[str, 
     )
 
     if horizon == "short":
-        return await short_term_india_answer(question, profile=profile)
+        return await short_term_india_answer(question, profile=profile, hindi=hindi)
     if horizon == "intermediate":
-        return await intermediate_india_answer(question, profile=profile)
+        return await intermediate_india_answer(question, profile=profile, hindi=hindi)
     if horizon == "long":
-        return await long_term_india_answer(question, profile=profile)
+        return await long_term_india_answer(question, profile=profile, hindi=hindi)
 
     # ── Full wiki-retrieval pipeline for unknown horizon ──────────────────────
     index_content = _iread("index.md")
@@ -923,6 +931,8 @@ Instructions:
 
 YOUR RESPONSE:"""
 
+    if hindi:
+        answer_prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(answer_prompt)
 
     # ── Step 4: File the insight ──────────────────────────────────────────────
