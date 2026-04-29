@@ -16,7 +16,7 @@ SQLite tables read:    insights, market_snapshots, news_articles, insights
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import text
@@ -104,30 +104,83 @@ def get_recent_insights(limit: int = 5) -> list[dict]:
 
 
 def get_latest_prices() -> list[dict]:
-    """Return the most recent price for each tracked symbol."""
+    """Return the most-recent price for each tracked symbol.
+
+    Also computes change_abs and change_pct by comparing the latest row to the
+    second-most-recent row for the same symbol — no schema change required.
+    Includes a data_label ("Live" | "Previous Close" | "Delayed") derived from
+    the age of captured_at relative to a 60-minute staleness threshold.
+    """
     engine = get_engine()
     with Session(engine) as session:
+        # Fetch the two most-recent rows per symbol so we can compute change%.
         rows = session.execute(
             text("""
-            SELECT symbol, price, volume, captured_at
+            SELECT symbol, price, volume, captured_at,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY captured_at DESC) AS rn
             FROM market_snapshots
-            WHERE (symbol, captured_at) IN (
-                SELECT symbol, MAX(captured_at)
-                FROM market_snapshots
-                GROUP BY symbol
-            )
-            ORDER BY symbol
+            ORDER BY symbol, captured_at DESC
         """)
         ).fetchall()
-    return [
-        {
-            "symbol": r.symbol,
-            "price": r.price,
-            "volume": r.volume,
-            "captured_at": str(r.captured_at),
-        }
-        for r in rows
-    ]
+
+    # Group into latest (rn=1) and prev (rn=2) per symbol.
+    latest: dict[str, object] = {}
+    prev: dict[str, float] = {}
+    for r in rows:
+        if r.rn == 1:
+            latest[r.symbol] = r
+        elif r.rn == 2:
+            prev[r.symbol] = float(r.price)
+
+    now_utc = datetime.now(UTC)
+    stale_threshold_minutes = 60
+
+    results: list[dict] = []
+    for symbol, r in sorted(latest.items()):
+        price = float(r.price)
+        prev_price = prev.get(symbol)
+        change_abs: float | None = None
+        change_pct: float | None = None
+        if prev_price is not None and prev_price != 0:
+            change_abs = round(price - prev_price, 2)
+            change_pct = round((price - prev_price) / prev_price * 100, 2)
+
+        # Freshness label
+        try:
+            captured = datetime.fromisoformat(str(r.captured_at).replace(" ", "T"))
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=UTC)
+            age_minutes = (now_utc - captured).total_seconds() / 60
+        except Exception:
+            age_minutes = 0
+
+        # NYSE/NASDAQ hours: Mon–Fri 09:30–16:00 ET (UTC-4 in summer)
+        et_now = now_utc.astimezone(timezone(timedelta(hours=-4)))
+        weekday = et_now.weekday()
+        hour = et_now.hour + et_now.minute / 60
+        market_open = weekday < 5 and 9.5 <= hour <= 16.0
+
+        if age_minutes > stale_threshold_minutes:
+            data_label = "Delayed"
+        elif market_open:
+            data_label = "Live"
+        else:
+            data_label = "Previous Close"
+
+        results.append(
+            {
+                "symbol": symbol,
+                "price": price,
+                "prev_close": prev_price,
+                "change_abs": change_abs,
+                "change_pct": change_pct,
+                "volume": float(r.volume) if r.volume is not None else None,
+                "captured_at": str(r.captured_at),
+                "data_label": data_label,
+                "source": "yfinance",
+            }
+        )
+    return results
 
 
 def get_recent_headlines(limit: int = 20) -> list[dict]:

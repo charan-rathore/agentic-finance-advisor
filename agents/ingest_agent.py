@@ -21,7 +21,8 @@ This agent does NOT call Gemini or do any analysis.
 """
 
 import asyncio
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta, timezone
 
 import feedparser
 import yfinance as yf
@@ -48,50 +49,108 @@ from core.settings import settings
 _HEAVY_FETCH_TIMEOUT_SECONDS = 180.0
 
 
+_STALE_THRESHOLD_MINUTES = 60  # data older than this is labelled "Delayed"
+
+
 def _yf_snapshot(symbol: str) -> dict | None:
-    """
-    Blocking yfinance call. Tries fast_info first (cheap), then falls back to the
-    1-day history endpoint. Returns None when yfinance has no data for the symbol.
+    """Blocking yfinance call for one US symbol.
+
+    Enriched to return:
+      price, prev_close, change_abs, change_pct,
+      fetched_at, data_label ("Live" | "Previous Close" | "Delayed"),
+      source, volume.
+
+    Strategy:
+    1. fast_info: last_price + regular_market_previous_close (cheapest).
+    2. history(period="5d") fallback: use last non-NaN close as price,
+       second-to-last as prev_close.
+    3. Return None and log a warning when no price can be determined.
 
     Runs in a thread via run_in_executor so the event loop is never blocked.
     """
     ticker = yf.Ticker(symbol)
+    fetched_at = datetime.now(UTC)
     price: float | None = None
+    prev_close: float | None = None
     volume: float = 0.0
+    tz = "America/New_York"
 
+    # ── Attempt 1: fast_info ──────────────────────────────────────────────────
     try:
-        info = ticker.fast_info
-        price = getattr(info, "last_price", None)
-        if price is None and isinstance(info, dict):
-            price = info.get("last_price")
-        vol = getattr(info, "three_month_average_volume", None)
-        if vol is None and isinstance(info, dict):
-            vol = info.get("three_month_average_volume")
+        fi = ticker.fast_info
+        raw_price = getattr(fi, "last_price", None)
+        raw_prev = getattr(fi, "regular_market_previous_close", None) or getattr(
+            fi, "previous_close", None
+        )
+        tz = getattr(fi, "timezone", "America/New_York") or "America/New_York"
+
+        if raw_price is not None and not math.isnan(float(raw_price)):
+            price = float(raw_price)
+        if raw_prev is not None and not math.isnan(float(raw_prev)):
+            prev_close = float(raw_prev)
+
+        vol = getattr(fi, "last_volume", None) or getattr(
+            fi, "three_month_average_volume", None
+        )
         if vol is not None:
             volume = float(vol)
+
     except Exception as e:
         logger.debug(f"[Ingest] fast_info failed for {symbol}: {e}")
 
+    # ── Attempt 2: history fallback ───────────────────────────────────────────
     if price is None:
         try:
-            hist = ticker.history(period="1d", auto_adjust=False)
-            if len(hist) > 0:
-                price = float(hist["Close"].iloc[-1])
-                if "Volume" in hist.columns:
-                    volume = float(hist["Volume"].iloc[-1])
+            hist = ticker.history(period="5d", auto_adjust=False)
+            if not hist.empty:
+                closes = hist["Close"].dropna()
+                if not closes.empty:
+                    price = float(closes.iloc[-1])
+                    if "Volume" in hist.columns:
+                        volume = float(
+                            hist["Volume"].iloc[hist.index.get_loc(closes.index[-1])]
+                        )
+                    if len(closes) >= 2 and prev_close is None:
+                        prev_close = float(closes.iloc[-2])
         except Exception as e:
-            logger.debug(f"[Ingest] history fallback failed for {symbol}: {e}")
+            logger.warning(f"[Ingest] history fallback failed for {symbol}: {e}")
 
     if price is None:
+        logger.warning(f"[Ingest] No price data available for {symbol} — skipping")
         return None
+
+    # ── Derived fields ────────────────────────────────────────────────────────
+    change_abs: float | None = None
+    change_pct: float | None = None
+    if prev_close is not None and prev_close != 0:
+        change_abs = round(price - prev_close, 2)
+        change_pct = round((price - prev_close) / prev_close * 100, 2)
+
+    # ── Data freshness label ──────────────────────────────────────────────────
+    # NYSE/NASDAQ regular hours: Mon–Fri 09:30–16:00 ET
+    et_now = fetched_at.astimezone(timezone(timedelta(hours=-4)))  # EDT
+    weekday = et_now.weekday()
+    hour = et_now.hour + et_now.minute / 60
+    market_open = weekday < 5 and 9.5 <= hour <= 16.0
+
+    if market_open:
+        data_label = "Live"
+    else:
+        data_label = "Previous Close"
 
     return {
         "symbol": symbol,
-        "price": round(float(price), 2),
+        "price": round(price, 2),
+        "prev_close": round(prev_close, 2) if prev_close is not None else None,
+        "change_abs": change_abs,
+        "change_pct": change_pct,
         "volume": round(volume, 0),
-        "timestamp": datetime.now(UTC).isoformat(),
+        "exchange_tz": tz,
+        "fetched_at": fetched_at.isoformat(),
+        "data_label": data_label,
+        "captured_at": fetched_at.isoformat(),
         "source": "yfinance",
-        "market_time": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        "market_time": fetched_at.strftime("%Y-%m-%d %H:%M UTC"),
     }
 
 

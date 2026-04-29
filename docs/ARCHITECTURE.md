@@ -170,6 +170,22 @@ data/
 - Both wikis use identical code paths — `WIKI_DIR` is injected at call time
 - Operational: linting, health snapshots, and TTL staleness run independently
 
+**Dual-wiki at runtime:** `core/wiki_india.py` always points `WIKI_DIR` at `data/wiki_india/`
+while `core/wiki.py` targets `data/wiki/`; the Analysis Agent routes each ingested payload
+to the correct wiki by inspecting the `market` tag on the raw data envelope — Indian sources
+write to `data/wiki_india/`, global sources write to `data/wiki/`. The two wikis share no
+pages and their lint/health cycles run independently, so a stale US macro page never
+suppresses a fresh Indian SIP recommendation.
+
+**UserProfile personalisation layer:** When a user completes the onboarding form in the
+India Advisor tab, their `UserProfile` row (income range, SIP budget, risk tolerance,
+tax bracket, primary goal, investment horizon) is injected directly into the Gemini prompt
+at query time via `query_india(..., profile=profile_dict)`. This means every answer is
+already filtered for the user's affordability and tax situation — the advisor will not
+suggest ₹25k/month SIPs to someone whose budget is ₹2k/month, and it prioritises ELSS
+for users in the 30 % tax bracket automatically. The profile is stored locally in SQLite
+and is never sent to any external API beyond the Gemini prompt itself.
+
 ### Wiki Page Anatomy
 
 Every page has a YAML frontmatter block that the Trust Layer reads:

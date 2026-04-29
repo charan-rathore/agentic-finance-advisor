@@ -4,3 +4,5 @@
 ## [2026-04-12 09:29 UTC] ingest | 2 articles, 1 prices | updated: JNJ
 
 ## [2026-04-12 09:29 UTC] ingest | 1 articles, 1 prices | updated: NVDA
+
+## [2026-04-28 19:05 UTC] beginner_query | "I am new to nifty, please explain what is nifty..." | consulted: concepts/finance_basics.md, overview.md

@@ -38,7 +38,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiofiles
@@ -100,42 +101,118 @@ async def _save(filepath: Path, data: dict) -> Path:
 # ── 1. NSE Stock Prices ───────────────────────────────────────────────────────
 
 
-def _nse_snapshot(symbol: str) -> dict | None:
-    """Blocking yfinance call for one NSE symbol. Mirrors ingest_agent._yf_snapshot."""
-    ticker = yf.Ticker(symbol)
-    price: float | None = None
-    volume: float = 0.0
+_STALE_THRESHOLD_MINUTES = 60  # data older than this is labelled "Delayed"
 
+
+def _nse_snapshot(symbol: str) -> dict | None:
+    """Blocking yfinance call for one NSE symbol.
+
+    Enriched to return:
+      price_inr, prev_close_inr, change_abs, change_pct,
+      exchange_timestamp (last trade time in IST), fetched_at,
+      data_label ("Live" | "Previous Close" | "Delayed"),
+      source, exchange, volume.
+
+    Strategy:
+    1. Try fast_info for last_price + previous_close (cheapest path).
+    2. Fall back to history(period="5d") when fast_info returns None/NaN —
+       use the most-recent non-NaN close row as price and the row before it
+       as previous_close.
+    3. Return None and log a warning if no price can be determined.
+    """
+
+    ticker = yf.Ticker(symbol)
+    fetched_at = datetime.now(UTC)
+    price: float | None = None
+    prev_close: float | None = None
+    volume: float = 0.0
+    tz = "Asia/Kolkata"
+
+    # ── Attempt 1: fast_info ──────────────────────────────────────────────────
     try:
-        info = ticker.fast_info
-        price = getattr(info, "last_price", None)
-        vol = getattr(info, "three_month_average_volume", None)
+        fi = ticker.fast_info
+        raw_price = getattr(fi, "last_price", None)
+        raw_prev = getattr(fi, "regular_market_previous_close", None) or getattr(
+            fi, "previous_close", None
+        )
+        tz = getattr(fi, "timezone", "Asia/Kolkata") or "Asia/Kolkata"
+
+        if raw_price is not None and not math.isnan(float(raw_price)):
+            price = float(raw_price)
+        if raw_prev is not None and not math.isnan(float(raw_prev)):
+            prev_close = float(raw_prev)
+
+        vol = getattr(fi, "last_volume", None) or getattr(
+            fi, "three_month_average_volume", None
+        )
         if vol is not None:
             volume = float(vol)
+
     except Exception as e:
         logger.debug(f"[India] fast_info failed for {symbol}: {e}")
 
+    # ── Attempt 2: history fallback ───────────────────────────────────────────
     if price is None:
         try:
-            hist = ticker.history(period="1d", auto_adjust=False)
-            if len(hist) > 0:
-                price = float(hist["Close"].iloc[-1])
-                if "Volume" in hist.columns:
-                    volume = float(hist["Volume"].iloc[-1])
+            hist = ticker.history(period="5d", auto_adjust=False)
+            if not hist.empty:
+                # Find last row with a non-NaN close
+                closes = hist["Close"].dropna()
+                if not closes.empty:
+                    price = float(closes.iloc[-1])
+                    if "Volume" in hist.columns:
+                        volume = float(hist["Volume"].iloc[hist.index.get_loc(closes.index[-1])])
+                    # Previous close = second-to-last non-NaN row
+                    if len(closes) >= 2 and prev_close is None:
+                        prev_close = float(closes.iloc[-2])
         except Exception as e:
-            logger.debug(f"[India] history fallback failed for {symbol}: {e}")
+            logger.warning(f"[India] history fallback failed for {symbol}: {e}")
 
     if price is None:
+        logger.warning(f"[India] No price data available for {symbol} — skipping")
         return None
+
+    # ── Derived fields ────────────────────────────────────────────────────────
+    change_abs: float | None = None
+    change_pct: float | None = None
+    if prev_close is not None and prev_close != 0:
+        change_abs = round(price - prev_close, 2)
+        change_pct = round((price - prev_close) / prev_close * 100, 2)
+
+    # ── Data freshness label ──────────────────────────────────────────────────
+    # NSE trading hours: Mon–Fri 09:15–15:30 IST (UTC+5:30 = 03:45–10:00 UTC)
+    now_utc = fetched_at
+    ist_now = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    weekday = ist_now.weekday()  # Mon=0 … Fri=4, Sat=5, Sun=6
+    hour = ist_now.hour + ist_now.minute / 60
+
+    market_open = weekday < 5 and 9.25 <= hour <= 15.5  # 09:15 – 15:30 IST
+
+    if market_open:
+        data_label = "Live"
+    else:
+        # If the most recent data is the current calendar date's close, it's official close
+        data_label = "Previous Close"
+
+    # Override to "Delayed" if our fetched_at is suspiciously old relative to
+    # what the caller supplied — in practice only relevant for cached UI calls.
+    minutes_old = (fetched_at - now_utc).total_seconds() / 60
+    if minutes_old > _STALE_THRESHOLD_MINUTES:
+        data_label = "Delayed"
 
     return {
         "symbol": symbol,
         "exchange": "NSE",
-        "price_inr": round(float(price), 2),
+        "price_inr": round(price, 2),
+        "prev_close_inr": round(prev_close, 2) if prev_close is not None else None,
+        "change_abs": change_abs,
+        "change_pct": change_pct,
         "volume": round(volume, 0),
-        "timestamp": datetime.now(UTC).isoformat(),
+        "exchange_tz": tz,
+        "fetched_at": fetched_at.isoformat(),
+        "data_label": data_label,
         "source": "yfinance_nse",
-        "market_time": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        "market_time": fetched_at.strftime("%Y-%m-%d %H:%M UTC"),
     }
 
 

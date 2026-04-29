@@ -28,6 +28,7 @@ from agents.storage_agent import (
 from core.fetchers_india import fetch_amfi_nav, fetch_india_prices, fetch_rbi_rates
 from core.models import UserProfile, init_db
 from core.settings import settings
+from core.trust import get_all_sources, get_page_version_history
 from core.wiki import (
     beginner_answer,
     detect_beginner_intent,
@@ -169,7 +170,9 @@ if ask and question.strip():
 
 # ── Dashboard panels ────────────────────────────────────────────────────────
 
-dashboard_tab, india_tab, health_tab = st.tabs(["Dashboard", "🇮🇳 India Advisor", "System Health"])
+dashboard_tab, india_tab, sources_tab, health_tab = st.tabs(
+    ["Dashboard", "🇮🇳 India Advisor", "🔍 Sources & History", "System Health"]
+)
 
 
 # ── India Advisor tab ────────────────────────────────────────────────────────
@@ -181,11 +184,29 @@ with india_tab:
     try:
         india_prices = _load_india_prices()
         if india_prices:
+            def _fmt_change(r: dict) -> str:
+                pct = r.get("change_pct")
+                if pct is None:
+                    return "N/A"
+                arrow = "▲" if pct >= 0 else "▼"
+                return f"{arrow} {pct:+.2f}%"
+
             price_rows = [
                 {
                     "Symbol": r["symbol"],
-                    "Price (₹)": r["price_inr"],
-                    "Change%": r.get("change_pct", "N/A"),
+                    "Price (₹)": f"₹{r['price_inr']:,.2f}",
+                    "Prev Close (₹)": f"₹{r['prev_close_inr']:,.2f}"
+                    if r.get("prev_close_inr") is not None
+                    else "N/A",
+                    "Change (₹)": f"{r['change_abs']:+.2f}"
+                    if r.get("change_abs") is not None
+                    else "N/A",
+                    "Change%": _fmt_change(r),
+                    "Status": r.get("data_label", ""),
+                    "Last Updated": r.get("fetched_at", "")[:16].replace("T", " ") + " UTC"
+                    if r.get("fetched_at")
+                    else "N/A",
+                    "Source": r.get("source", "yfinance_nse"),
                 }
                 for r in india_prices
             ]
@@ -389,15 +410,86 @@ with india_tab:
                         for p in sources:
                             st.markdown(f"- `{p}`")
 
+with sources_tab:
+    st.subheader("Source Registry")
+
+    @st.cache_data(ttl=60)
+    def _load_sources() -> list[dict[str, object]]:
+        return get_all_sources(_engine)
+
+    source_rows = _load_sources()
+    if source_rows:
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                {
+                    "URL": s["url"],
+                    "Name": s["source_name"],
+                    "Type": s["source_type"],
+                    "Domain": s["domain"],
+                    "Trusted": "✅" if s["is_trusted"] else "⚠️",
+                    "Reachable": "✅" if s["is_reachable"] else "❌",
+                    "HTTP": s["http_status"],
+                    "Fetches": s["fetch_count"],
+                    "Last fetched": s["last_fetched_at"],
+                }
+                for s in source_rows
+            ]
+        )
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("No sources registered yet. Run the ingest agent first.")
+
+    st.subheader("Wiki Version History")
+    wiki_page = st.text_input(
+        "Page name (e.g. stocks/RELIANCE)",
+        placeholder="stocks/RELIANCE",
+        key="wiki_page_input",
+    )
+    if wiki_page.strip():
+        history = get_page_version_history(_engine, wiki_page.strip())
+        if history:
+            import pandas as pd
+
+            hist_df = pd.DataFrame(
+                [
+                    {
+                        "Version": h["version"],
+                        "Changed at": h["changed_at"],
+                        "Summary": h["change_summary"],
+                        "Triggered by": h["triggered_by"],
+                        "Words before": h["word_count_before"],
+                        "Words after": h["word_count_after"],
+                    }
+                    for h in history
+                ]
+            )
+            st.dataframe(hist_df, use_container_width=True)
+        else:
+            st.info(f"No version history found for page '{wiki_page.strip()}'.")
+
+
 with dashboard_tab:
     st.header("Current Market Prices")
     prices = get_latest_prices()
 
     if prices:
-        cols = st.columns(min(len(prices), 5))
-        for col, item in zip(cols, prices, strict=False):
-            col.metric(label=item["symbol"], value=f"${item['price']:,.2f}")
-        st.caption(f"Last updated: {prices[0]['captured_at']}")
+        price_table = [
+            {
+                "Symbol": p["symbol"],
+                "Price (USD)": f"${p['price']:,.2f}",
+                "Prev Close": f"${p['prev_close']:,.2f}" if p.get("prev_close") else "N/A",
+                "Change (USD)": f"{p['change_abs']:+.2f}" if p.get("change_abs") is not None else "N/A",
+                "Change%": f"{p['change_pct']:+.2f}%" if p.get("change_pct") is not None else "N/A",
+                "Status": p.get("data_label", ""),
+                "Last Updated": p["captured_at"][:16].replace("T", " ") + " UTC",
+                "Source": p.get("source", "yfinance"),
+            }
+            for p in prices
+        ]
+        st.dataframe(price_table, use_container_width=True, hide_index=True)
+        st.caption(f"Last updated: {prices[0]['captured_at'][:16]} UTC · {prices[0].get('data_label', '')}")
     else:
         st.info("⏳ Waiting for first data fetch (up to 5 minutes)...")
 
