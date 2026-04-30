@@ -1132,16 +1132,65 @@ WRITE THE ANSWER NOW (markdown only):"""
         prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(prompt)
 
+    # ── Reflection critic (P1.6) ────────────────────────────────────────────
+    # Lazy-imported to avoid a circular import at module load (reflection
+    # imports call_gemini from core.wiki, which is fine, but keeping the import
+    # local also lets unit tests patch reflect at the wiki_india module level).
+    from core.reflection import reflect
+
+    source_pages_for_critic: dict[str, str] = {}
+    if primer:
+        source_pages_for_critic["basics/finance_basics_india.md"] = primer
+    if tax_guide:
+        source_pages_for_critic["basics/tax_india.md"] = tax_guide
+    if overview:
+        source_pages_for_critic["overview.md"] = overview
+
+    reflection_result = await reflect(
+        question=question,
+        profile=profile,
+        source_pages=source_pages_for_critic,
+        candidate_answer=answer,
+        mode="india",
+    )
+
+    regen_fired = False
+    if reflection_result.get("verdict") == "REGENERATE" and not reflection_result.get("error"):
+        guidance = reflection_result.get("regenerate_guidance", "")
+        if guidance:
+            logger.info(
+                f"[IndiaWiki] Reflection critic flagged the answer for regeneration. "
+                f"Reasons: {reflection_result.get('reasons')}"
+            )
+            regen_prompt = (
+                prompt
+                + "\n\nCRITIC FEEDBACK (apply before re-writing):\n"
+                + guidance
+            )
+            try:
+                answer = await call_gemini(regen_prompt)
+                regen_fired = True
+            except Exception as exc:  # pragma: no cover — best-effort regen
+                logger.warning(f"[IndiaWiki] Regen call failed, keeping original answer: {exc}")
+
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
+    checks_str = ", ".join(
+        f"{k}={v}" for k, v in (reflection_result.get("checks") or {}).items()
+    )
     insight_page = (
         f"# India Beginner Session: {question[:80]}\n\n{answer}\n\n"
         f"---\n*Sources: {', '.join(consulted)}*\n"
         f"*Flow: beginner_answer_india | hindi={hindi} | profile={'yes' if profile else 'no'}*\n"
+        f"*Reflection: verdict={reflection_result.get('verdict', '?')} | "
+        f"regen_fired={regen_fired} | {checks_str}*\n"
         f"*Generated: {timestamp} UTC*\n"
         f"*⚠️ Educational only.*\n"
     )
     _iwrite(f"insights/beginner_{timestamp}.md", insight_page)
-    _iappend_log(f"beginner | \"{question[:60]}\" | consulted: {', '.join(consulted)}")
+    _iappend_log(
+        f"beginner | \"{question[:60]}\" | consulted: {', '.join(consulted)} | "
+        f"reflection={reflection_result.get('verdict', '?')} regen={regen_fired}"
+    )
 
     return answer, consulted
 
