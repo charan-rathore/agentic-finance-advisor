@@ -7,10 +7,20 @@ The same ORM code works with PostgreSQL later by changing one line in settings.p
 """
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase
+
+
+def _utcnow() -> datetime:
+    """Aware UTC ``now()`` — replaces deprecated ``datetime.utcnow``.
+
+    SQLAlchemy ``Column(default=...)`` accepts a callable that takes no args, so
+    this is a drop-in replacement for the prior ``default=datetime.utcnow`` use.
+    Python 3.12 deprecated ``datetime.utcnow``; 3.13+ removes it.
+    """
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -26,7 +36,7 @@ class MarketSnapshot(Base):
     symbol = Column(String(20), nullable=False, index=True)
     price = Column(Float, nullable=False)
     volume = Column(Float)
-    captured_at = Column(DateTime, default=datetime.utcnow, index=True)
+    captured_at = Column(DateTime, default=_utcnow, index=True)
 
 
 class NewsArticle(Base):
@@ -39,7 +49,7 @@ class NewsArticle(Base):
     url = Column(String(1000))
     body = Column(Text)
     source = Column(String(100))
-    ingested_at = Column(DateTime, default=datetime.utcnow)
+    ingested_at = Column(DateTime, default=_utcnow)
 
 
 class Insight(Base):
@@ -52,7 +62,7 @@ class Insight(Base):
     insight_text = Column(Text, nullable=False)
     sentiment_summary = Column(Text)  # brief summary of sentiment signal used
     sources = Column(Text)  # JSON list of source URLs from RAG
-    generated_at = Column(DateTime, default=datetime.utcnow, index=True)
+    generated_at = Column(DateTime, default=_utcnow, index=True)
     model_used = Column(String(50), default="gemini-1.5-flash")
 
 
@@ -71,7 +81,7 @@ class FetchRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     source = Column(String(40), nullable=False, index=True)
     key = Column(String(40), nullable=False, index=True, default="")
-    last_attempt_at = Column(DateTime, default=datetime.utcnow)
+    last_attempt_at = Column(DateTime, default=_utcnow)
     last_success_at = Column(DateTime, nullable=True)
     last_content_hash = Column(String(64), nullable=True)
     last_error = Column(Text, nullable=True)
@@ -101,8 +111,8 @@ class SourceRegistry(Base):
     is_trusted = Column(Boolean, default=False)
     is_reachable = Column(Boolean, default=True)
     http_status = Column(Integer)
-    first_fetched_at = Column(DateTime, default=datetime.utcnow)
-    last_fetched_at = Column(DateTime, default=datetime.utcnow)
+    first_fetched_at = Column(DateTime, default=_utcnow)
+    last_fetched_at = Column(DateTime, default=_utcnow)
     fetch_count = Column(Integer, default=1)
 
 
@@ -125,7 +135,7 @@ class UserProfile(Base):
     tax_bracket_pct = Column(Float, nullable=False)  # 0.0 | 5.0 | 20.0 | 30.0
     primary_goal = Column(String(100), nullable=False)  # free-form short phrase
     horizon_pref = Column(String(20), nullable=False)  # "short" | "intermediate" | "long"
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=_utcnow, index=True)
 
 
 class KnowledgeVersion(Base):
@@ -148,7 +158,7 @@ class KnowledgeVersion(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     page_name = Column(String(300), nullable=False, index=True)
     version = Column(Integer, nullable=False)
-    changed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    changed_at = Column(DateTime, default=_utcnow, index=True)
     change_summary = Column(Text)
     source_urls = Column(Text)
     source_types = Column(Text)

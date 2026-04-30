@@ -278,7 +278,7 @@ class TestIngestIndiaSmoke:
 
         with (
             patch.object(wiki_india, "call_gemini", return_value="## Mock page content"),
-            patch.object(wiki_india, "_iwrite", side_effect=lambda p, c: writes.append(p)),
+            patch.object(wiki_india, "_iwrite", side_effect=lambda p, c, **_kw: writes.append(p)),
             patch.object(wiki_india, "_iappend_log"),
         ):
             asyncio.run(wiki_india.ingest_india(prices=prices))
@@ -300,7 +300,7 @@ class TestIngestIndiaSmoke:
 
         with (
             patch.object(wiki_india, "call_gemini", return_value="## Mock macro page"),
-            patch.object(wiki_india, "_iwrite", side_effect=lambda p, c: writes.append(p)),
+            patch.object(wiki_india, "_iwrite", side_effect=lambda p, c, **_kw: writes.append(p)),
             patch.object(wiki_india, "_iappend_log"),
         ):
             asyncio.run(wiki_india.ingest_india(rbi_rates=rbi))

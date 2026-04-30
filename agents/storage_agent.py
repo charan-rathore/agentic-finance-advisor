@@ -16,7 +16,8 @@ SQLite tables read:    insights, market_snapshots, news_articles, insights
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 from sqlalchemy import text
@@ -154,8 +155,8 @@ def get_latest_prices() -> list[dict]:
         except Exception:
             age_minutes = 0
 
-        # NYSE/NASDAQ hours: Mon–Fri 09:30–16:00 ET (UTC-4 in summer)
-        et_now = now_utc.astimezone(timezone(timedelta(hours=-4)))
+        # NYSE/NASDAQ hours: Mon–Fri 09:30–16:00 ET (EST/EDT auto-handled by ZoneInfo)
+        et_now = now_utc.astimezone(ZoneInfo("America/New_York"))
         weekday = et_now.weekday()
         hour = et_now.hour + et_now.minute / 60
         market_open = weekday < 5 and 9.5 <= hour <= 16.0

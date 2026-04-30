@@ -390,7 +390,13 @@ with india_tab:
             with st.spinner("Consulting the India wiki…"):
                 try:
                     if is_beginner:
-                        ans, sources = asyncio.run(beginner_answer_india(india_q.strip()))
+                        ans, sources = asyncio.run(
+                            beginner_answer_india(
+                                india_q.strip(),
+                                profile=profile_dict,
+                                hindi=hindi_mode,
+                            )
+                        )
                     else:
                         ans, sources = asyncio.run(
                             query_india(

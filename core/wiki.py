@@ -195,7 +195,11 @@ async def call_gemini(prompt: str) -> str:
 # ── Operation 1: Ingest → Wiki update ────────────────────────────────────────
 
 
-async def ingest_to_wiki(articles: list[dict], prices: list[dict]) -> None:
+async def ingest_to_wiki(
+    articles: list[dict],
+    prices: list[dict],
+    engine: object = None,
+) -> None:
     """
     Core wiki operation: LLM reads new articles/prices and updates wiki pages.
 
@@ -205,6 +209,10 @@ async def ingest_to_wiki(articles: list[dict], prices: list[dict]) -> None:
 
     This is the 'compile once' step — knowledge is structured here so that
     query_wiki() can read pre-synthesized pages instead of raw chunks.
+
+    When ``engine`` is provided, every wiki page write is logged to the
+    ``knowledge_versions`` table via ``core.trust.record_wiki_version`` —
+    this powers the "Sources & History" tab. Backward-compatible.
     """
     if not articles and not prices:
         return
@@ -268,7 +276,15 @@ WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
         frontmatter_text = "---\n" + yaml.dump(frontmatter, default_flow_style=False) + "---\n\n"
         final_content = frontmatter_text + page_content
 
-        _write_wiki_file(f"stocks/{symbol}.md", final_content)
+        _write_wiki_file(
+            f"stocks/{symbol}.md",
+            final_content,
+            engine=engine,
+            change_summary=f"ingest update for {symbol}",
+            source_urls=[a.get("url", "") for a in articles if a.get("url")],
+            source_types=["yfinance", "rss_news"],
+            triggered_by="ingest_to_wiki",
+        )
         logger.info(f"[Wiki] Updated stocks/{symbol}.md")
 
     # ── Step 2: Update overview synthesis ────────────────────────────────────
@@ -295,7 +311,15 @@ End with `> Last updated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}`
 WRITE THE OVERVIEW NOW (markdown only):"""
 
     overview = await call_gemini(prompt)
-    _write_wiki_file("overview.md", overview)
+    _write_wiki_file(
+        "overview.md",
+        overview,
+        engine=engine,
+        change_summary="overview synthesis update",
+        source_urls=[a.get("url", "") for a in articles if a.get("url")],
+        source_types=["yfinance", "rss_news"],
+        triggered_by="ingest_to_wiki",
+    )
 
     # ── Step 3: Rebuild index.md catalog ─────────────────────────────────────
     all_pages = list_wiki_pages()
@@ -314,7 +338,15 @@ WRITE THE OVERVIEW NOW (markdown only):"""
     index_lines.append("\n## Insights Archive\n")
     for page in sorted(p for p in all_pages if p.startswith("insights/")):
         index_lines.append(f"- `{page}`\n")
-    _write_wiki_file("index.md", "".join(index_lines))
+    _write_wiki_file(
+        "index.md",
+        "".join(index_lines),
+        engine=engine,
+        change_summary="index rebuild",
+        source_urls=[],
+        source_types=[],
+        triggered_by="ingest_to_wiki",
+    )
 
     # ── Step 4: Log the ingest event ─────────────────────────────────────────
     _append_log(

@@ -30,11 +30,25 @@ from loguru import logger
 from textblob import TextBlob
 
 from core.fetchers import fetch_google_news_rss
+from core.models import init_db
 from core.queues import insights_queue, raw_india_queue, raw_market_queue, raw_news_queue
 from core.settings import settings
 from core.wiki import ingest_to_wiki, lint_wiki, query_wiki
 from core.wiki_india import ingest_india
 from core.wiki_ingest import process_all_new_raw_files
+
+# Module-level engine singleton — same pattern used by storage_agent.
+# Threading the engine into ingest_to_wiki / ingest_india powers the Trust
+# Layer audit trail (rows in ``knowledge_versions``).
+_engine: object = None
+
+
+def _get_engine() -> object:
+    """Return the SQLAlchemy engine, initialising it lazily once per process."""
+    global _engine
+    if _engine is None:
+        _engine = init_db(settings.DATABASE_URL)
+    return _engine
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 
@@ -183,6 +197,7 @@ async def run() -> None:
                     nav_records=list(india_nav_buf),
                     rbi_rates=india_rbi_buf,
                     news_batches=list(india_news_buf),
+                    engine=_get_engine(),
                 )
                 # Clear buffers only after a successful ingest
                 india_prices_buf.clear()
@@ -199,7 +214,7 @@ async def run() -> None:
                 f"[Analysis Agent] Triggering wiki ingest "
                 f"({len(new_articles)} articles, {len(market_buffer)} prices)..."
             )
-            await ingest_to_wiki(new_articles, list(market_buffer))
+            await ingest_to_wiki(new_articles, list(market_buffer), engine=_get_engine())
 
         # ── Check if it's time for a Gemini insight query ─────────────────────
         now = time.time()
@@ -214,7 +229,7 @@ async def run() -> None:
 
         # Ensure wiki is up to date before querying
         if new_articles:
-            await ingest_to_wiki(new_articles, list(market_buffer))
+            await ingest_to_wiki(new_articles, list(market_buffer), engine=_get_engine())
 
         logger.info("[Analysis Agent] Querying wiki for market insight...")
 

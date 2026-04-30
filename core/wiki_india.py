@@ -78,13 +78,40 @@ def _iread(rel_path: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
-def _iwrite(rel_path: str, content: str) -> None:
-    """Write (overwrite) an India wiki file."""
+def _iwrite(
+    rel_path: str,
+    content: str,
+    engine: object = None,
+    change_summary: str = "india wiki update",
+    source_urls: list[str] | None = None,
+    source_types: list[str] | None = None,
+    triggered_by: str = "ingest_india",
+) -> None:
+    """Write (overwrite) an India wiki file.
+
+    When ``engine`` is provided, ``core.trust.record_wiki_version`` is called
+    after the write to log the change to ``knowledge_versions``. Backward-
+    compatible: existing two-arg callers continue to work.
+    """
     p = _ipath(rel_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     old = p.read_text(encoding="utf-8") if p.exists() else ""
     p.write_text(content, encoding="utf-8")
     logger.debug(f"[IndiaWiki] Wrote {rel_path} ({len(content)} chars, was {len(old)} chars)")
+
+    if engine is not None:
+        from core.trust import record_wiki_version
+
+        record_wiki_version(
+            engine=engine,
+            page_name=f"india/{rel_path}",
+            new_content=content,
+            old_content=old,
+            change_summary=change_summary,
+            source_urls=source_urls or [],
+            source_types=source_types or [],
+            triggered_by=triggered_by,
+        )
 
 
 def _iappend_log(entry: str) -> None:
@@ -534,6 +561,7 @@ async def ingest_india(
     nav_records: list[dict] | None = None,
     rbi_rates: dict | None = None,
     news_batches: list[dict] | None = None,
+    engine: object = None,
 ) -> None:
     """
     Update the Indian wiki from fresh fetcher data.
@@ -546,6 +574,8 @@ async def ingest_india(
         nav_records:  list of AMFI NAV dicts from fetch_amfi_nav()
         rbi_rates:    dict from fetch_rbi_rates()
         news_batches: list of news batch dicts from fetch_india_news_rss()
+        engine:       SQLAlchemy engine. When supplied, every wiki page write is
+                      logged to ``knowledge_versions`` via ``core.trust``.
     """
     prices = prices or []
     nav_records = nav_records or []
@@ -622,7 +652,15 @@ WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
                 + "---\n\n"
                 + page_content
             )
-            _iwrite(f"equities/{symbol}.md", full)
+            _iwrite(
+                f"equities/{symbol}.md",
+                full,
+                engine=engine,
+                change_summary=f"NSE ingest update for {symbol}",
+                source_urls=[a.get("link", "") for a in articles if a.get("link")],
+                source_types=["yfinance_nse", "google_news_rss_india"],
+                triggered_by="ingest_india",
+            )
             logger.info(f"[IndiaWiki] Updated equities/{symbol}.md")
         except Exception as e:
             logger.error(f"[IndiaWiki] Failed to update page for {symbol}: {e}")
@@ -675,7 +713,15 @@ WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
                 + "---\n\n"
                 + page_content
             )
-            _iwrite(rel, full)
+            _iwrite(
+                rel,
+                full,
+                engine=engine,
+                change_summary=f"AMFI NAV update for {fname}",
+                source_urls=[],
+                source_types=["amfi_mfapi"],
+                triggered_by="ingest_india",
+            )
             logger.info(f"[IndiaWiki] Updated {rel}")
         except Exception as e:
             logger.error(f"[IndiaWiki] Failed to update MF page {fname}: {e}")
@@ -724,7 +770,15 @@ WRITE THE COMPLETE PAGE NOW (markdown only, no preamble):"""
                 + "---\n\n"
                 + page_content
             )
-            _iwrite("macro/rbi_rates.md", full)
+            _iwrite(
+                "macro/rbi_rates.md",
+                full,
+                engine=engine,
+                change_summary="RBI policy rates update",
+                source_urls=[rbi_rates.get("source_url", "")] if rbi_rates.get("source_url") else [],
+                source_types=[rbi_rates.get("source", "rbi")],
+                triggered_by="ingest_india",
+            )
             logger.info("[IndiaWiki] Updated macro/rbi_rates.md")
         except Exception as e:
             logger.error(f"[IndiaWiki] Failed to update RBI rates page: {e}")
@@ -772,7 +826,15 @@ End with `> Last updated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}`
 WRITE THE OVERVIEW NOW (markdown only):"""
 
         overview = await call_gemini(overview_prompt)
-        _iwrite("overview.md", overview)
+        _iwrite(
+            "overview.md",
+            overview,
+            engine=engine,
+            change_summary="india overview synthesis update",
+            source_urls=[],
+            source_types=["yfinance_nse", "amfi_mfapi", "rbi"],
+            triggered_by="ingest_india",
+        )
         logger.info("[IndiaWiki] Updated overview.md")
     except Exception as e:
         logger.error(f"[IndiaWiki] Failed to update overview: {e}")
@@ -800,7 +862,15 @@ WRITE THE OVERVIEW NOW (markdown only):"""
     lines.append("\n## Insights Archive\n")
     for page in sorted(p for p in all_pages if p.startswith("insights/")):
         lines.append(f"- `{page}`\n")
-    _iwrite("index.md", "".join(lines))
+    _iwrite(
+        "index.md",
+        "".join(lines),
+        engine=engine,
+        change_summary="india index rebuild",
+        source_urls=[],
+        source_types=[],
+        triggered_by="ingest_india",
+    )
 
     _iappend_log(
         f"ingest | {len(prices)} prices, {len(nav_records)} NAVs, "
@@ -984,12 +1054,20 @@ investment_horizon: {horizon}
 # ── Operation 2b: Indian beginner onboarding ──────────────────────────────────
 
 
-async def beginner_answer_india(question: str) -> tuple[str, list[str]]:
+async def beginner_answer_india(
+    question: str,
+    profile: dict | None = None,
+    hindi: bool = False,
+) -> tuple[str, list[str]]:
     """
     Answer a first-time investor question using the Indian basics primer.
 
     Always reads finance_basics_india.md and tax_india.md as context so the
     answer is grounded in Indian products, regulation, and currency.
+
+    When ``profile`` is supplied, ``_profile_block`` is interpolated into the
+    prompt so beginner answers reference the user's income/SIP budget/goal.
+    When ``hindi`` is True, the response is requested entirely in Devanagari.
 
     Returns (answer_text, pages_consulted).
     """
@@ -1015,7 +1093,7 @@ async def beginner_answer_india(question: str) -> tuple[str, list[str]]:
 
     prompt = f"""You are a patient, friendly financial educator for first-time Indian investors.
 The user is completely new to investing and needs clarity, not jargon.
-
+{_profile_block(profile)}
 USER QUESTION: {question}
 
 KNOWLEDGE BASE:
@@ -1050,13 +1128,16 @@ Style:
 
 WRITE THE ANSWER NOW (markdown only):"""
 
+    if hindi:
+        prompt += "\n\nPlease respond entirely in Hindi (Devanagari script)."
     answer = await call_gemini(prompt)
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M")
     insight_page = (
         f"# India Beginner Session: {question[:80]}\n\n{answer}\n\n"
         f"---\n*Sources: {', '.join(consulted)}*\n"
-        f"*Flow: beginner_answer_india*\n*Generated: {timestamp} UTC*\n"
+        f"*Flow: beginner_answer_india | hindi={hindi} | profile={'yes' if profile else 'no'}*\n"
+        f"*Generated: {timestamp} UTC*\n"
         f"*⚠️ Educational only.*\n"
     )
     _iwrite(f"insights/beginner_{timestamp}.md", insight_page)
