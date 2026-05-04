@@ -52,10 +52,20 @@ from core.models import init_db
 from core.settings import settings
 from core.trust import register_source
 
+_engine: object = None
+
 
 def _get_engine() -> object:
-    """Return a short-lived SQLAlchemy engine for source registration calls."""
-    return init_db(settings.DATABASE_URL)
+    """Return a module-level SQLAlchemy engine singleton.
+
+    Previously this called ``init_db()`` per invocation, creating a fresh engine
+    for every source-registration call. Caching to a module-level singleton
+    matches the pattern in ``agents/storage_agent.py``.
+    """
+    global _engine
+    if _engine is None:
+        _engine = init_db(settings.DATABASE_URL)
+    return _engine
 
 
 def _schedule_registration(url: str, source_name: str, source_type: str) -> None:
@@ -127,6 +137,7 @@ def _nse_snapshot(symbol: str) -> dict | None:
     prev_close: float | None = None
     volume: float = 0.0
     tz = "Asia/Kolkata"
+    last_trade_time: datetime | None = None  # populated only on history-fallback path
 
     # ── Attempt 1: fast_info ──────────────────────────────────────────────────
     try:
@@ -165,6 +176,12 @@ def _nse_snapshot(symbol: str) -> dict | None:
                     # Previous close = second-to-last non-NaN row
                     if len(closes) >= 2 and prev_close is None:
                         prev_close = float(closes.iloc[-2])
+                    # Capture last-trade time so we can compute true staleness.
+                    try:
+                        ts = closes.index[-1].to_pydatetime()
+                        last_trade_time = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+                    except Exception:
+                        last_trade_time = None
         except Exception as e:
             logger.warning(f"[India] history fallback failed for {symbol}: {e}")
 
@@ -181,8 +198,7 @@ def _nse_snapshot(symbol: str) -> dict | None:
 
     # ── Data freshness label ──────────────────────────────────────────────────
     # NSE trading hours: Mon–Fri 09:15–15:30 IST (UTC+5:30 = 03:45–10:00 UTC)
-    now_utc = fetched_at
-    ist_now = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    ist_now = fetched_at.astimezone(timezone(timedelta(hours=5, minutes=30)))
     weekday = ist_now.weekday()  # Mon=0 … Fri=4, Sat=5, Sun=6
     hour = ist_now.hour + ist_now.minute / 60
 
@@ -194,11 +210,13 @@ def _nse_snapshot(symbol: str) -> dict | None:
         # If the most recent data is the current calendar date's close, it's official close
         data_label = "Previous Close"
 
-    # Override to "Delayed" if our fetched_at is suspiciously old relative to
-    # what the caller supplied — in practice only relevant for cached UI calls.
-    minutes_old = (fetched_at - now_utc).total_seconds() / 60
-    if minutes_old > _STALE_THRESHOLD_MINUTES:
-        data_label = "Delayed"
+    # Override to "Delayed" only when we have a real last-trade timestamp
+    # (history-fallback path). The fast_info path has no trade timestamp; we
+    # trust the surrounding cache TTL there rather than fabricate a value.
+    if last_trade_time is not None:
+        minutes_old = (fetched_at - last_trade_time).total_seconds() / 60
+        if minutes_old > _STALE_THRESHOLD_MINUTES:
+            data_label = "Delayed"
 
     return {
         "symbol": symbol,

@@ -22,7 +22,8 @@ This agent does NOT call Gemini or do any analysis.
 
 import asyncio
 import math
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import feedparser
 import yfinance as yf
@@ -49,7 +50,10 @@ from core.settings import settings
 _HEAVY_FETCH_TIMEOUT_SECONDS = 180.0
 
 
-_STALE_THRESHOLD_MINUTES = 60  # data older than this is labelled "Delayed"
+# NOTE: the runtime staleness threshold lives in ``agents/storage_agent.py``
+# (where the UI's data-label decision is computed). The previous module-level
+# constant here was unused — removed to avoid the impression that tweaking it
+# changes behaviour.
 
 
 def _yf_snapshot(symbol: str) -> dict | None:
@@ -127,8 +131,8 @@ def _yf_snapshot(symbol: str) -> dict | None:
         change_pct = round((price - prev_close) / prev_close * 100, 2)
 
     # ── Data freshness label ──────────────────────────────────────────────────
-    # NYSE/NASDAQ regular hours: Mon–Fri 09:30–16:00 ET
-    et_now = fetched_at.astimezone(timezone(timedelta(hours=-4)))  # EDT
+    # NYSE/NASDAQ regular hours: Mon–Fri 09:30–16:00 ET (EST/EDT auto-handled)
+    et_now = fetched_at.astimezone(ZoneInfo("America/New_York"))
     weekday = et_now.weekday()
     hour = et_now.hour + et_now.minute / 60
     market_open = weekday < 5 and 9.5 <= hour <= 16.0
@@ -163,6 +167,7 @@ async def fetch_market_data(engine: object) -> list[dict]:  # engine: sqlalchemy
     Yahoo is temporarily rate-limiting).
     """
     results: list[dict] = []
+    pending_rows: list[MarketSnapshot] = []
     loop = asyncio.get_event_loop()
 
     for symbol in settings.YFINANCE_SYMBOLS:
@@ -175,22 +180,27 @@ async def fetch_market_data(engine: object) -> list[dict]:  # engine: sqlalchemy
                 continue
 
             results.append(snap)
-
-            with Session(engine) as session:
-                session.add(
-                    MarketSnapshot(
-                        symbol=snap["symbol"],
-                        price=snap["price"],
-                        volume=snap["volume"],
-                        captured_at=datetime.now(UTC),
-                    )
+            pending_rows.append(
+                MarketSnapshot(
+                    symbol=snap["symbol"],
+                    price=snap["price"],
+                    volume=snap["volume"],
+                    captured_at=datetime.now(UTC),
                 )
-                session.commit()
+            )
 
             logger.info(f"[Ingest] {symbol}: ${snap['price']:.2f}")
 
         except Exception as e:
             logger.error(f"[Ingest] Error fetching {symbol}: {e}")
+
+    if pending_rows:
+        try:
+            with Session(engine) as session:
+                session.add_all(pending_rows)
+                session.commit()
+        except Exception as e:
+            logger.error(f"[Ingest] Batched market_snapshots commit failed: {e}")
 
     return results
 
@@ -218,6 +228,7 @@ async def fetch_news(engine: object) -> list[dict]:  # engine: sqlalchemy.Engine
     Free, no API key, public feeds.
     """
     articles: list[dict] = []
+    pending_rows: list[NewsArticle] = []
     loop = asyncio.get_event_loop()
 
     for feed_url in _default_news_feeds():
@@ -239,23 +250,28 @@ async def fetch_news(engine: object) -> list[dict]:  # engine: sqlalchemy.Engine
                     "source": feed_source,
                 }
                 articles.append(article)
-
-                with Session(engine) as session:
-                    session.add(
-                        NewsArticle(
-                            headline=article["headline"],
-                            url=article["url"],
-                            body=article["body"],
-                            source=article["source"],
-                            ingested_at=datetime.now(UTC),
-                        )
+                pending_rows.append(
+                    NewsArticle(
+                        headline=article["headline"],
+                        url=article["url"],
+                        body=article["body"],
+                        source=article["source"],
+                        ingested_at=datetime.now(UTC),
                     )
-                    session.commit()
+                )
 
             logger.info(f"[Ingest] {len(feed.entries[:15])} articles from {feed_url[:80]}")
 
         except Exception as e:
             logger.error(f"[Ingest] Error fetching feed {feed_url}: {e}")
+
+    if pending_rows:
+        try:
+            with Session(engine) as session:
+                session.add_all(pending_rows)
+                session.commit()
+        except Exception as e:
+            logger.error(f"[Ingest] Batched news_articles commit failed: {e}")
 
     return articles
 

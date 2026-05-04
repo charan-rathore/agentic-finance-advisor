@@ -170,9 +170,17 @@ if ask and question.strip():
 
 # ── Dashboard panels ────────────────────────────────────────────────────────
 
-dashboard_tab, india_tab, sources_tab, health_tab = st.tabs(
-    ["Dashboard", "🇮🇳 India Advisor", "🔍 Sources & History", "System Health"]
+india_tab, global_tab, sources_tab, health_tab = st.tabs(
+    [
+        "🇮🇳 India Advisor",
+        "🌍 Global Markets",
+        "🔍 Sources & History",
+        "⚙️ System Health",
+    ]
 )
+# Backwards-compatible alias so the existing `with dashboard_tab:` block below
+# keeps rendering into the (now renamed) Global Markets tab without further edits.
+dashboard_tab = global_tab
 
 
 # ── India Advisor tab ────────────────────────────────────────────────────────
@@ -180,41 +188,56 @@ dashboard_tab, india_tab, sources_tab, health_tab = st.tabs(
 with india_tab:
     st.subheader("🇮🇳 Indian Market Overview")
 
-    # ── Row 1: NSE stock prices ───────────────────────────────────────────────
+    # ── Row 1: NSE stock prices (metric cards, not a dataframe) ───────────────
     try:
         india_prices = _load_india_prices()
         if india_prices:
-            def _fmt_change(r: dict) -> str:
-                pct = r.get("change_pct")
-                if pct is None:
-                    return "N/A"
-                arrow = "▲" if pct >= 0 else "▼"
-                return f"{arrow} {pct:+.2f}%"
-
-            price_rows = [
-                {
-                    "Symbol": r["symbol"],
-                    "Price (₹)": f"₹{r['price_inr']:,.2f}",
-                    "Prev Close (₹)": f"₹{r['prev_close_inr']:,.2f}"
-                    if r.get("prev_close_inr") is not None
-                    else "N/A",
-                    "Change (₹)": f"{r['change_abs']:+.2f}"
-                    if r.get("change_abs") is not None
-                    else "N/A",
-                    "Change%": _fmt_change(r),
-                    "Status": r.get("data_label", ""),
-                    "Last Updated": r.get("fetched_at", "")[:16].replace("T", " ") + " UTC"
-                    if r.get("fetched_at")
-                    else "N/A",
-                    "Source": r.get("source", "yfinance_nse"),
-                }
+            # ── Market summary banner: one-line mood across the index ──────
+            usable_pcts = [
+                r["change_pct"]
                 for r in india_prices
+                if r.get("change_pct") is not None
             ]
-            st.dataframe(price_rows, use_container_width=True, hide_index=True)
+            any_live = any(r.get("data_label") == "Live" for r in india_prices)
+            if usable_pcts:
+                avg_pct = sum(usable_pcts) / len(usable_pcts)
+                if not any_live:
+                    st.info("⏸️ Markets are closed. Showing last available prices.")
+                elif avg_pct > 0.25:
+                    st.success(f"🟢 Markets are up today — avg {avg_pct:+.2f}% across tracked NSE stocks.")
+                elif avg_pct < -0.25:
+                    st.error(f"🔴 Markets are down today — avg {avg_pct:+.2f}% across tracked NSE stocks.")
+                else:
+                    st.info(f"🟡 Markets are flat today — avg {avg_pct:+.2f}% across tracked NSE stocks.")
+            else:
+                st.info("⏸️ Market Closed — showing last cached prices.")
+
+            # ── Metric grid: 5 cards per row ───────────────────────────────
+            cols_per_row = 5
+            rows = [india_prices[i : i + cols_per_row] for i in range(0, len(india_prices), cols_per_row)]
+            for row in rows:
+                cols = st.columns(len(row))
+                for col, r in zip(cols, row, strict=False):
+                    symbol = r["symbol"].replace(".NS", "")
+                    price = r.get("price_inr")
+                    pct = r.get("change_pct")
+                    label = r.get("data_label", "")
+                    price_str = f"₹{price:,.2f}" if price is not None else "Market Closed"
+                    delta_str = (
+                        f"{pct:+.2f}%" if pct is not None
+                        else None
+                    )
+                    with col:
+                        st.metric(
+                            label=symbol,
+                            value=price_str,
+                            delta=delta_str,
+                            help=f"{label} · {r.get('fetched_at','')[:16].replace('T',' ')} UTC",
+                        )
         else:
-            st.info("No NSE price data available yet.")
-    except Exception:
-        st.warning("Live data unavailable — using cached wiki data")
+            st.info("⏸️ Market Closed — no NSE price data available yet.")
+    except Exception as e:
+        st.warning(f"Live India data unavailable — falling back to cached wiki ({type(e).__name__})")
 
     # ── Row 2: Mutual fund NAVs ───────────────────────────────────────────────
     try:
@@ -390,7 +413,13 @@ with india_tab:
             with st.spinner("Consulting the India wiki…"):
                 try:
                     if is_beginner:
-                        ans, sources = asyncio.run(beginner_answer_india(india_q.strip()))
+                        ans, sources = asyncio.run(
+                            beginner_answer_india(
+                                india_q.strip(),
+                                profile=profile_dict,
+                                hindi=hindi_mode,
+                            )
+                        )
                     else:
                         ans, sources = asyncio.run(
                             query_india(
@@ -472,6 +501,10 @@ with sources_tab:
 
 with dashboard_tab:
     st.header("Current Market Prices")
+    st.caption(
+        "Same engine, US tickers — proof the architecture is market-agnostic. "
+        "India is the demo's primary surface; this tab is the portability proof."
+    )
     prices = get_latest_prices()
 
     if prices:

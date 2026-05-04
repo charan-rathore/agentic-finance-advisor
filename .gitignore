@@ -15,6 +15,17 @@ data/finance.db
 data/raw/
 *.db
 
+# Auto-generated wiki insights and append-only logs.
+# These are produced by the agents on every cycle and pollute `git status`
+# without adding value to the repo. Keep the directory structure (.gitkeep)
+# but ignore the contents.
+data/wiki/insights/*
+!data/wiki/insights/.gitkeep
+data/wiki_india/insights/*
+!data/wiki_india/insights/.gitkeep
+data/wiki/log.md
+data/wiki_india/log.md
+
 # Logs
 logs/
 *.log
