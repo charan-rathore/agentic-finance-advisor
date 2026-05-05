@@ -7,22 +7,42 @@ No black boxes. No generic advice. No hallucinations dressed up as insight.
 
 ---
 
-## The Problem With Financial Guidance Today
+## Two Products, One Platform
 
-Most financial apps dump data on you and leave you to figure out what to do with it.
-Chatbots give confident answers with no verifiable sources. Human advisors cost money
-most people don't have. The result: millions of people with real savings, real goals,
-and no clear path forward.
-
-The three barriers that stop people from investing are not ambition:
-
-- **Complexity.** Products assume you already know what SIP, ELSS, PPF, and LTCG mean.
-- **Trust.** "Best fund" lists change every month; nobody explains why.
-- **Advice gap.** Personalised guidance exists for high-net-worth clients. Everyone else gets content marketing.
+| | FinSight India | FinSight Global |
+|---|---|---|
+| **Coverage** | NSE equities, mutual funds, RBI macro, India news | US equities, SEC filings, FRED macro, global news |
+| **Language** | English + Hindi (one toggle) | English |
+| **Advisor** | India-tuned (SIP, ELSS, PPF, NPS, LTCG) | Global macro and US equity focus |
+| **Mobile** | Android APK via Capacitor | Web only |
 
 ---
 
-## What FinSight AI Does Differently
+## Screenshots
+
+### Dashboard — Light Mode
+![Dashboard Light](docs/screenshots/01_dashboard_light.png)
+
+### Dashboard — Dark Mode
+![Dashboard Dark](docs/screenshots/05_dashboard_dark.png)
+
+### AI Advisor Chat
+![AI Advisor Light](docs/screenshots/02_chat_light.png)
+
+### Financial Calculators
+![Calculators Light](docs/screenshots/03_calculators_light.png)
+
+### Global Markets
+![Global Markets](docs/screenshots/04_global_markets_light.png)
+
+### Dark Mode — Chat & Calculators
+| Chat (Dark) | Calculators (Dark) |
+|---|---|
+| ![Chat Dark](docs/screenshots/06_chat_dark.png) | ![Calculators Dark](docs/screenshots/07_calculators_dark.png) |
+
+---
+
+## What Makes Finsight Different
 
 Three things simultaneously, which no existing product combines:
 
@@ -48,15 +68,22 @@ flagged as stale. The rubric is documented and shown to users. No competitor doe
 
 | Feature | Description |
 | --- | --- |
-| Live market dashboard | Prices, change%, status (Live / Previous Close / Delayed), last updated timestamp |
+| Personal financial snapshot | Income, SIP budget, goal, risk DNA badge on every page load |
+| Live market dashboard | Prices, change%, bar chart, last updated timestamp |
+| Dark / Light mode | Persisted in localStorage, syncs across all pages |
 | India market track | NSE stocks, mutual fund NAVs (AMFI), RBI policy rates |
 | Global market track | US equities, SEC filings, FRED macro, Alpha Vantage, Finnhub |
-| AI advisor (Q&A) | Ask anything; beginner vs. expert mode auto-detected from your question |
+| AI advisor (Q&A) | Ask anything; beginner vs. expert mode auto-detected |
+| Recharts visualisations | Market bar chart on dashboard, area charts in calculators |
 | Personalisation | 5-question onboarding stores your income, goal, horizon, risk tolerance |
-| Hindi support | One checkbox routes all answers through Gemini in Hindi |
-| Trust Layer | Source registry, knowledge version history, confidence scoring on every answer |
+| Hindi support | One toggle routes all answers through Gemini in Hindi |
+| Trust Layer | Source registry, knowledge version history, confidence score on every answer |
+| SIP Calculator | Year-by-year area chart showing invested vs estimated value |
+| Goal Planner | Work backwards from target to monthly SIP |
+| ELSS Tax Saver | Section 80C deduction calculator |
+| Emergency Fund | Coverage-based safety net calculator |
 | System Health | Wiki freshness, stale page detection, raw data inventory |
-| Sources & History | Every data source the system fetched from, with trust and reachability status |
+| Android APK | Capacitor-wrapped React app, points to deployed backend |
 
 ---
 
@@ -85,7 +112,11 @@ Data Sources
                        user_profiles
             |
             v
-  Streamlit UI  (port 8501)
+  FastAPI backend  (port 8000)
+            |
+            v
+  React + Vite frontend  (port 5173)
+  [also available as Android APK via Capacitor]
 ```
 
 The knowledge base compounds: every query answer is filed back as a versioned insight
@@ -100,6 +131,11 @@ page. The more the system runs, the richer and faster the answers become.
 | Agent runtime | Python asyncio | Three parallel agents, zero infrastructure |
 | LLM | Google Gemini 2.5 Flash | Free tier, 1M tokens/day, excellent multilingual support |
 | Knowledge base | LLM Wiki (Karpathy pattern) | Persistent compounding markdown, no vector DB |
+| Backend API | FastAPI + uvicorn | Async, type-safe, auto docs at `/docs` |
+| Frontend | React 19 + Vite + TypeScript | Fast HMR, full type safety |
+| Styling | Tailwind CSS v3 | Utility-first, dark mode via `class` strategy |
+| Charts | Recharts | Bar chart (market), area chart (calculators) |
+| Mobile | Capacitor v8 | React → Android APK, same codebase |
 | India prices | yfinance (.NS symbols) | NSE prices, free, no API key |
 | Mutual fund NAVs | AMFI API (mfapi.in) | Free, daily updates, all SEBI-registered schemes |
 | RBI macro | RBI DBIE JSON endpoint | Repo rate, CRR, SLR, free |
@@ -107,7 +143,6 @@ page. The more the system runs, the richer and faster the answers become.
 | US data | SEC EDGAR, FRED, Alpha Vantage, Finnhub | Company facts, macro, fundamentals |
 | Sentiment | TextBlob | Offline NLP, classifies headlines as bullish/bearish/neutral |
 | Database | SQLite + SQLAlchemy | Zero-config, migrates to Postgres trivially |
-| UI | Streamlit | Python-native dashboard |
 | Trust Layer | core/trust.py | Source registry, knowledge versioning, confidence scoring |
 
 **Total running cost: $0 / month on the free tier.**
@@ -119,6 +154,7 @@ page. The more the system runs, the richer and faster the answers become.
 ### Prerequisites
 
 - Python 3.11+
+- Node.js 18+
 - Free Gemini API key from [aistudio.google.com](https://aistudio.google.com/) (no credit card needed)
 
 ### Run locally
@@ -127,35 +163,46 @@ page. The more the system runs, the richer and faster the answers become.
 git clone <repo>
 cd starter-project
 
+# Python backend
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# One-time: download TextBlob sentiment data
 python -m textblob.download_corpora
 
 cp .env.example .env
 # Add your GEMINI_API_KEY to .env
-# All other API keys are optional -- the system runs without them
 
 # Terminal 1: start the three agents
-python main.py
+python run.py
 
-# Terminal 2: start the dashboard
-streamlit run ui/app.py
-# Opens at http://localhost:8501
+# Terminal 2: start the API backend
+uvicorn app.main:app --reload --loop asyncio
+
+# Terminal 3: start the React frontend
+cd frontend && npm install && npm run dev
+# Opens at http://localhost:5173
 ```
 
 First answers appear after approximately 10 minutes (one full data fetch and wiki
-compilation cycle). Use `python scripts/run_data_fetch_once.py` to seed data immediately
-without waiting for the loop.
+compilation cycle). Use `python scripts/run_data_fetch_once.py` to seed data immediately.
 
 ### Run with Docker
 
 ```bash
 cp .env.example .env   # add GEMINI_API_KEY
 docker-compose up --build
-# Dashboard: http://localhost:8501
 ```
+
+---
+
+## Deploy to Render (free tier)
+
+The `render.yaml` in the repo configures a free FastAPI web service on Render.com:
+
+1. Fork this repo
+2. Go to [render.com](https://render.com) → New → Blueprint
+3. Connect your repo — Render reads `render.yaml` automatically
+4. Set the `GEMINI_API_KEY` environment variable in the Render dashboard
+5. Deploy — backend will be live at `https://finsight-backend.onrender.com`
 
 ---
 
@@ -167,55 +214,37 @@ agents/
   analysis_agent.py    Sentiment + LLM Wiki updates + Gemini query answering
   storage_agent.py     SQLite persistence + data interface for the UI
 
+app/
+  main.py              FastAPI application (all API routes)
+
 core/
   settings.py          All config loaded from .env (single source of truth)
   models.py            SQLAlchemy ORM (snapshots, insights, trust tables, profiles)
   wiki.py              LLM Wiki: ingest_to_wiki, query_wiki, confidence scoring
-  wiki_india.py        India wiki pipeline (wraps wiki.py with India-specific routing)
-  wiki_ingest.py       Routes raw JSON files to the correct wiki pages via Gemini
   trust.py             Trust Layer: source registry, versioning, confidence
-  fetchers.py          Data fetchers: FRED, Reddit, news RSS, VIX/Fear&Greed
-  fetchers_india.py    Indian fetchers: AMFI NAV, RBI rates, NSE prices, India news
-  sec_client.py        SEC EDGAR async client
-  alpha_vantage_client.py
-  finnhub_client.py
-  schemas.py           RawPayload provenance envelope
+  faq.py               Pre-seeded FAQ answers for instant responses
+  nudges.py            Smart financial nudges based on profile + market state
+
+frontend/
+  src/
+    components/Layout.tsx     Sidebar nav + dark mode toggle
+    pages/Dashboard.tsx       Personal snapshot + market chart + live prices
+    pages/Chat.tsx            AI advisor with suggested questions + confidence badge
+    pages/Calculators.tsx     SIP, Goal, ELSS, Emergency with area charts
+    pages/GlobalMarkets.tsx   US equities + news + insights
+    pages/SystemHealth.tsx    Wiki freshness, stale page detection
+  tailwind.config.js          darkMode: 'class' + brand color palette
+  vite.config.ts              Proxy /api → FastAPI backend
 
 data/
   wiki_india/          Primary Indian knowledge base (Nifty, MFs, RBI, tax concepts)
   wiki/                Global (US) knowledge base
   raw/                 All fetched JSON files with provenance metadata
-  reference/
-    companies.yaml         US company intelligence (17 tickers)
-    companies_india.yaml   Indian company intelligence (NSE top-10)
 
-ui/app.py              Streamlit dashboard (login, market tabs, advisor, charts, health)
-main.py                Entry point -- starts all three agents
-tests/                 184 unit tests, all green
-docs/ARCHITECTURE.md   Full system design and decision log
-AGENTS.md              Developer reference (run commands, directory guide)
+docs/
+  screenshots/         UI screenshots for this README
+  ARCHITECTURE.md      Full system design and decision log
 ```
-
----
-
-## For Developers
-
-```bash
-# Install dev dependencies
-pip install -r requirements-dev.txt && pre-commit install
-
-# Run tests (must always pass before committing)
-pytest tests/ -q
-
-# Linting and type checking
-ruff check . && mypy core agents ui
-
-# One-shot data fetch (seeds the DB without starting the loop)
-python scripts/run_data_fetch_once.py
-```
-
-See `docs/ARCHITECTURE.md` for the full system design and `PROJECT_TODO.md` for the
-decision log and open work items.
 
 ---
 
