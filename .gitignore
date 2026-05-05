@@ -66,6 +66,26 @@ frontend/dist/
 # Alembic (optional local overrides — now under legacy/)
 legacy/alembic.ini.local
 
-# Local-only docs (not for GitHub)
-# NOTE: plan docs moved to docs/archive/ as of 2026-04-18
+# Local-only docs and planning files
 PROJECT_TODO.md
+**/plan.md
+**/todo.md
+**/TODO.md
+**/PLAN.md
+TODO_*.md
+PLAN_*.md
+
+# Large binary / generated artifacts
+*.apk
+*.aab
+*.pptx
+*.docx
+*.ppt
+*.doc
+*.xls
+*.xlsx
+finsight-debug.apk
+
+# Frontend build artifacts
+frontend/tsconfig.tsbuildinfo
+tsconfig.tsbuildinfo
