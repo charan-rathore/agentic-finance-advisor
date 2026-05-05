@@ -1,5 +1,9 @@
 const isCapacitor = typeof (window as unknown as Record<string, unknown>).Capacitor !== 'undefined'
-const BASE = isCapacitor ? 'http://10.0.2.2:8000' : ''
+// VITE_API_URL is set at build time for APK releases pointing at Render backend.
+// Falls back to same-origin (empty string) for browser/Streamlit deploys.
+const BASE = isCapacitor
+  ? (import.meta.env.VITE_API_URL ?? 'https://finsight-backend.onrender.com')
+  : (import.meta.env.VITE_API_URL ?? '')
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

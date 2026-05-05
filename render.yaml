@@ -3,7 +3,7 @@ services:
     name: finsight-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python app/main.py
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHONPATH
         value: .
@@ -11,6 +11,8 @@ services:
         value: data/wiki_india
       - key: DATABASE_URL
         value: sqlite:///data/finance.db
+      - key: ALLOWED_ORIGINS
+        value: "*"
 
   - type: web
     name: finsight-ui
