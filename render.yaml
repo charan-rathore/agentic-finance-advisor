@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: finsight-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/main.py
+    envVars:
+      - key: PYTHONPATH
+        value: .
+      - key: WIKI_DIR
+        value: data/wiki_india
+      - key: DATABASE_URL
+        value: sqlite:///data/finance.db
+
+  - type: web
+    name: finsight-ui
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run ui/app.py --server.port=$PORT --server.address=0.0.0.0
+    envVars:
+      - key: PYTHONPATH
+        value: .
+      - key: WIKI_DIR
+        value: data/wiki_india
+      - key: DATABASE_URL
+        value: sqlite:///data/finance.db

@@ -1,23 +1,23 @@
 # Architecture
 
 > Multi-agent AI investment advisor for Indian retail investors ("Bharat"), with a
-> parallel global (US) market track. Free-tier-only stack — zero operational cost.
+> parallel global (US) market track. Free-tier-only stack - zero operational cost.
 
 ## Core Principles
 
-1. **India-first** — primary knowledge base is `data/wiki_india/`; Indian instruments,
+1. **India-first** - primary knowledge base is `data/wiki_india/`; Indian instruments,
    INR-denominated examples, SEBI/AMFI regulatory context, SIP-first advice.
-2. **Dual-wiki, shared engine** — the same three-agent pipeline serves both an Indian
+2. **Dual-wiki, shared engine** - the same three-agent pipeline serves both an Indian
    wiki and a global wiki. Switching is a single setting; no code is duplicated.
-3. **LLM Wiki over RAG** — Gemini compiles incoming data into persistent markdown pages
+3. **LLM Wiki over RAG** - Gemini compiles incoming data into persistent markdown pages
    that compound over time. Queries read pre-synthesised knowledge instead of searching
    raw vectors. No vector DB, no embedding model costs.
-4. **Trust Layer** — every answer carries a confidence score (0.30–1.00) computed from
+4. **Trust Layer** - every answer carries a confidence score (0.30-1.00) computed from
    observable signals (staleness, source diversity, recency). Every wiki write is
    version-tracked with its source URLs. Users can always see *why* to trust advice.
-5. **Fail-safe fetching** — cadence tracking, per-source timeouts, content-hash dedup,
+5. **Fail-safe fetching** - cadence tracking, per-source timeouts, content-hash dedup,
    graceful degradation when any API key is absent.
-6. **Zero cost** — Gemini free tier (1 M tokens/day) + yfinance + RSS + AMFI NAV API +
+6. **Zero cost** - Gemini free tier (1 M tokens/day) + yfinance + RSS + AMFI NAV API +
    RBI rates + SQLite. No credit card required to run the prototype.
 
 ---
@@ -26,7 +26,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Data Flow — Dual Market                            │
+│                          Data Flow - Dual Market                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 
   INDIAN DATA SOURCES          GLOBAL DATA SOURCES
@@ -53,7 +53,7 @@
   │  • Calls Gemini to update wiki pages from raw data         │
   │  • Confidence scoring on every query answer                │
   │  • Beginner / horizon / profile-aware routing              │
-  │  • lint_wiki() every 6h — contradiction + staleness audit  │
+  │  • lint_wiki() every 6h - contradiction + staleness audit   │
   └─────────────────────────────────┬─────────────────────────┘
                                     │  insights_queue
                        ┌────────────┼────────────┐
@@ -82,7 +82,7 @@
 
 ## Three-Agent Pipeline
 
-### Agent 1 — Ingest Agent (`agents/ingest_agent.py`)
+### Agent 1 - Ingest Agent (`agents/ingest_agent.py`)
 
 **What it does:** Continuously fetches market data and news on configurable cadences.
 Saves everything to `data/raw/` with a provenance envelope before any processing.
@@ -111,7 +111,7 @@ Saves everything to `data/raw/` with a provenance envelope before any processing
 - SHA-256 content hashing on SEC payloads prevents redundant 7 MB re-downloads
 - All sources gracefully degrade when keys are absent
 
-### Agent 2 — Analysis Agent (`agents/analysis_agent.py`)
+### Agent 2 - Analysis Agent (`agents/analysis_agent.py`)
 
 **What it does:** Converts raw data into structured knowledge and answers user queries.
 
@@ -121,10 +121,10 @@ Saves everything to `data/raw/` with a provenance envelope before any processing
 - **Query routing:** Detects beginner intent, investment horizon, user profile → picks
   the right Gemini prompt and wiki subset to answer from
 - **Confidence scoring:** `_compute_confidence()` computes a 0.30–1.00 score from
-  staleness flags, source diversity, and recency — attached to every filed insight
-- **Health audit:** `lint_wiki()` every 6 h — Gemini-powered contradiction detection
+  staleness flags, source diversity, and recency - attached to every filed insight
+- **Health audit:** `lint_wiki()` every 6 h - Gemini-powered contradiction detection
 
-### Agent 3 — Storage Agent (`agents/storage_agent.py`)
+### Agent 3 - Storage Agent (`agents/storage_agent.py`)
 
 **What it does:** Persists everything to SQLite and exposes clean query helpers for
 the Streamlit UI. Keeps the UI free of direct SQLAlchemy / agent knowledge.
@@ -145,13 +145,13 @@ data/
 │   │   ├── RELIANCE.md          # Price + news + SEC-equivalent fundamentals
 │   │   ├── TCS.md
 │   │   └── HDFCBANK.md  ...
-│   ├── mutual_funds/            # NEW category — no US equivalent
+│   ├── mutual_funds/            # NEW category - no US equivalent
 │   │   ├── nifty50_index.md     # NAV history + expense ratio + risk rating
 │   │   ├── elss_top5.md
 │   │   └── liquid_funds.md
 │   ├── concepts/
-│   │   ├── finance_basics_india.md  # SIP, PPF, ELSS, NPS — India onboarding primer
-│   │   └── tax_india.md             # LTCG, STCG, 80C — critical for Indian advice
+│   │   ├── finance_basics_india.md  # SIP, PPF, ELSS, NPS - India onboarding primer
+│   │   └── tax_india.md             # LTCG, STCG, 80C - critical for Indian advice
 │   └── insights/
 │       └── (timestamped answers, confidence-scored)
 │
@@ -165,14 +165,14 @@ data/
 ```
 
 **Why two directories, not one with tags?**
-- Each wiki can be demoed independently — clean separation for the thesis pitch
+- Each wiki can be demoed independently - clean separation for the thesis pitch
 - No risk of Indian SIP advice bleeding into US equity analysis or vice versa
-- Both wikis use identical code paths — `WIKI_DIR` is injected at call time
+- Both wikis use identical code paths - `WIKI_DIR` is injected at call time
 - Operational: linting, health snapshots, and TTL staleness run independently
 
 **Dual-wiki at runtime:** `core/wiki_india.py` always points `WIKI_DIR` at `data/wiki_india/`
 while `core/wiki.py` targets `data/wiki/`; the Analysis Agent routes each ingested payload
-to the correct wiki by inspecting the `market` tag on the raw data envelope — Indian sources
+to the correct wiki by inspecting the `market` tag on the raw data envelope - Indian sources
 write to `data/wiki_india/`, global sources write to `data/wiki/`. The two wikis share no
 pages and their lint/health cycles run independently, so a stale US macro page never
 suppresses a fresh Indian SIP recommendation.
@@ -181,7 +181,7 @@ suppresses a fresh Indian SIP recommendation.
 India Advisor tab, their `UserProfile` row (income range, SIP budget, risk tolerance,
 tax bracket, primary goal, investment horizon) is injected directly into the Gemini prompt
 at query time via `query_india(..., profile=profile_dict)`. This means every answer is
-already filtered for the user's affordability and tax situation — the advisor will not
+already filtered for the user's affordability and tax situation - the advisor will not
 suggest ₹25k/month SIPs to someone whose budget is ₹2k/month, and it prioritises ELSS
 for users in the 30 % tax bracket automatically. The profile is stored locally in SQLite
 and is never sent to any external API beyond the Gemini prompt itself.
@@ -194,7 +194,7 @@ Every page has a YAML frontmatter block that the Trust Layer reads:
 ---
 page_type: stock_entity        # stock_entity | mutual_fund | concept | insight | primer
 symbol: RELIANCE                # omitted for non-stock pages
-market: india                   # "india" | "global" — routes queries correctly
+market: india                   # "india" | "global" - routes queries correctly
 last_updated: 2026-04-25T10:00:00+00:00
 ttl_hours: 24                  # staleness threshold
 data_sources: [yfinance_ns, google_news] # used for confidence scoring
@@ -233,7 +233,7 @@ confidence score, documented publicly so it can be explained in the thesis pitch
 | **Floor** | **0.30** |
 
 A score of 1.00 means: all pages are fresh, from diverse sources, and none are stale.
-A score of 0.30 means: the answer is a best-effort guess — verify independently.
+A score of 0.30 means: the answer is a best-effort guess - verify independently.
 
 ---
 
@@ -244,8 +244,8 @@ market_snapshots   symbol | price | volume | captured_at
 news_articles      headline | url | body | source | ingested_at
 insights           user_query | insight_text | sentiment_summary | sources | generated_at
 fetch_runs         source | key | last_attempt_at | last_success_at | last_error
-source_registry    (Trust Layer — see above)
-knowledge_versions (Trust Layer — see above)
+source_registry    (Trust Layer - see above)
+knowledge_versions (Trust Layer - see above)
 user_profiles      name | monthly_income | monthly_sip_budget | risk_tolerance
                    tax_bracket_pct | primary_goal | horizon_pref | created_at
 ```
@@ -286,7 +286,7 @@ did this answer come from?", you can open the markdown file and show them.
 ### Why SIP-first for Indian retail?
 
 SIP (Systematic Investment Plan) has 7.9 Cr active accounts in India (AMFI, March 2026).
-It is the dominant retail investment product for the ₹10K–₹1L/month income segment —
+It is the dominant retail investment product for the ₹10K-₹1L/month income segment -
 exactly the TAM the problem statement targets. Starting the advisor with SIP education
 meets users where they already are.
 
@@ -302,7 +302,7 @@ system ensures users always see when information is outdated.
 An Indian retail user investing ₹5,000/month on a ₹40,000 income cannot afford to
 act on bad advice the way a US investor with a diversified portfolio can. The Trust
 Layer's confidence score + "any stale pages" flag gives users an honest signal of
-how much to trust the current answer — and the rubric is documented publicly so it
+how much to trust the current answer - and the rubric is documented publicly so it
 survives scrutiny.
 
 ### Migration Readiness
@@ -317,8 +317,8 @@ survives scrutiny.
 ---
 
 **Historical note:** This architecture evolved through three versions:
-- v1: Complex microservices (Kafka, ChromaDB, FastAPI) — over-engineered for a prototype
-- v2: Simplified async single process — better, but US-only
-- v3: LLM Wiki + Trust Layer + dual-market — current
+- v1: Complex microservices (Kafka, ChromaDB, FastAPI) - over-engineered for a prototype
+- v2: Simplified async single process - better, but US-only
+- v3: LLM Wiki + Trust Layer + dual-market - current
 
 Previous plan documents: `docs/archive/`
