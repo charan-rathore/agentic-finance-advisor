@@ -2,7 +2,13 @@
 __pycache__/
 *.pyc
 .env
-data/
 logs/
 .git/
 *.db
+*.apk
+*.pptx
+*.docx
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/
+node_modules/

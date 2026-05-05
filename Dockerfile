@@ -1,4 +1,3 @@
-# Single Dockerfile for both the agents (main.py) and UI (ui/app.py)
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -10,14 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN python -m textblob.download_corpora && \
-    python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
-
-# v3 removed the RAG stack (ChromaDB + sentence-transformers). Do not re-add the
-# embedding download here — the LLM Wiki under data/wiki/ is plain markdown.
-
 COPY . .
 
-RUN mkdir -p /app/data /app/data/wiki /app/data/raw
+RUN mkdir -p /data/wiki_india /data/wiki /app/data/raw
 
-CMD ["python", "main.py"]
+ENV PYTHONPATH=/app
+ENV WIKI_DIR=data/wiki_india
+# DATABASE_URL uses /data (Fly volume mount) so SQLite survives redeploys
+ENV DATABASE_URL=sqlite:////data/finance.db
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
