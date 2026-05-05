@@ -11,12 +11,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /data/wiki_india /data/wiki /app/data/raw
+RUN mkdir -p /app/data/wiki_india /app/data/wiki /app/data/raw
 
 ENV PYTHONPATH=/app
 ENV WIKI_DIR=data/wiki_india
-# DATABASE_URL uses /data (Fly volume mount) so SQLite survives redeploys
-ENV DATABASE_URL=sqlite:////data/finance.db
+ENV DATABASE_URL=sqlite:///data/finance.db
 
 EXPOSE 8080
 
