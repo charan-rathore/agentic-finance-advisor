@@ -1,4 +1,4 @@
-# FinSight AI
+# Finsight
 
 **An agentic investment advisor that grounds every answer in live market data, explains
 the reasoning behind each recommendation, and tells you exactly how much to trust it.**
@@ -7,9 +7,24 @@ No black boxes. No generic advice. No hallucinations dressed up as insight.
 
 ---
 
+## The Problem With Financial Guidance Today
+
+Most financial apps dump data on you and leave you to figure out what to do with it.
+Chatbots give confident answers with no verifiable sources. Human advisors cost money
+most people don't have. The result: millions of people with real savings, real goals,
+and no clear path forward.
+
+The three barriers that stop people from investing are not ambition:
+
+- **Complexity.** Products assume you already know what SIP, ELSS, PPF, and LTCG mean.
+- **Trust.** "Best fund" lists change every month; nobody explains why.
+- **Advice gap.** Personalised guidance exists for high-net-worth clients. Everyone else gets content marketing.
+
+---
+
 ## Two Products, One Platform
 
-| | FinSight India | FinSight Global |
+| | Finsight India | Finsight Global |
 |---|---|---|
 | **Coverage** | NSE equities, mutual funds, RBI macro, India news | US equities, SEC filings, FRED macro, global news |
 | **Language** | English + Hindi (one toggle) | English |
@@ -73,14 +88,14 @@ flagged as stale. The rubric is documented and shown to users. No competitor doe
 | Dark / Light mode | Persisted in localStorage, syncs across all pages |
 | India market track | NSE stocks, mutual fund NAVs (AMFI), RBI policy rates |
 | Global market track | US equities, SEC filings, FRED macro, Alpha Vantage, Finnhub |
-| AI advisor (Q&A) | Ask anything; beginner vs. expert mode auto-detected |
+| AI advisor (Q&A) | Ask anything; beginner vs. expert mode auto-detected from your question |
 | Recharts visualisations | Market bar chart on dashboard, area charts in calculators |
 | Personalisation | 5-question onboarding stores your income, goal, horizon, risk tolerance |
 | Hindi support | One toggle routes all answers through Gemini in Hindi |
 | Trust Layer | Source registry, knowledge version history, confidence score on every answer |
 | SIP Calculator | Year-by-year area chart showing invested vs estimated value |
-| Goal Planner | Work backwards from target to monthly SIP |
-| ELSS Tax Saver | Section 80C deduction calculator |
+| Goal Planner | Work backwards from a target amount to the monthly SIP needed |
+| ELSS Tax Saver | Section 80C deduction calculator with tax bracket selector |
 | Emergency Fund | Coverage-based safety net calculator |
 | System Health | Wiki freshness, stale page detection, raw data inventory |
 | Android APK | Capacitor-wrapped React app, points to deployed backend |
@@ -166,10 +181,13 @@ cd starter-project
 # Python backend
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+# One-time: download TextBlob sentiment data
 python -m textblob.download_corpora
 
 cp .env.example .env
 # Add your GEMINI_API_KEY to .env
+# All other API keys are optional — the system runs without them
 
 # Terminal 1: start the three agents
 python run.py
@@ -183,13 +201,15 @@ cd frontend && npm install && npm run dev
 ```
 
 First answers appear after approximately 10 minutes (one full data fetch and wiki
-compilation cycle). Use `python scripts/run_data_fetch_once.py` to seed data immediately.
+compilation cycle). Use `python scripts/run_data_fetch_once.py` to seed data immediately
+without waiting for the loop.
 
 ### Run with Docker
 
 ```bash
 cp .env.example .env   # add GEMINI_API_KEY
 docker-compose up --build
+# Dashboard: http://localhost:5173
 ```
 
 ---
@@ -221,9 +241,12 @@ core/
   settings.py          All config loaded from .env (single source of truth)
   models.py            SQLAlchemy ORM (snapshots, insights, trust tables, profiles)
   wiki.py              LLM Wiki: ingest_to_wiki, query_wiki, confidence scoring
+  wiki_india.py        India wiki pipeline (wraps wiki.py with India-specific routing)
   trust.py             Trust Layer: source registry, versioning, confidence
   faq.py               Pre-seeded FAQ answers for instant responses
   nudges.py            Smart financial nudges based on profile + market state
+  fetchers.py          Data fetchers: FRED, Reddit, news RSS, VIX/Fear&Greed
+  fetchers_india.py    Indian fetchers: AMFI NAV, RBI rates, NSE prices, India news
 
 frontend/
   src/
@@ -235,11 +258,15 @@ frontend/
     pages/SystemHealth.tsx    Wiki freshness, stale page detection
   tailwind.config.js          darkMode: 'class' + brand color palette
   vite.config.ts              Proxy /api → FastAPI backend
+  capacitor.config.ts         Android APK config (deployed URL support)
 
 data/
   wiki_india/          Primary Indian knowledge base (Nifty, MFs, RBI, tax concepts)
   wiki/                Global (US) knowledge base
   raw/                 All fetched JSON files with provenance metadata
+  reference/
+    companies.yaml         US company intelligence (17 tickers)
+    companies_india.yaml   Indian company intelligence (NSE top-10)
 
 docs/
   screenshots/         UI screenshots for this README
@@ -248,6 +275,27 @@ docs/
 
 ---
 
-> **Disclaimer:** FinSight AI is a research prototype. It does not constitute
+## For Developers
+
+```bash
+# Install dev dependencies
+pip install -r requirements-dev.txt && pre-commit install
+
+# Run tests (must always pass before committing)
+pytest tests/ -q
+
+# Linting and type checking
+ruff check . && mypy core agents ui
+
+# One-shot data fetch (seeds the DB without starting the loop)
+python scripts/run_data_fetch_once.py
+```
+
+See `docs/ARCHITECTURE.md` for the full system design and `PROJECT_TODO.md` for the
+decision log and open work items.
+
+---
+
+> **Disclaimer:** Finsight is a research prototype. It does not constitute
 > licensed financial advice. Always verify information independently and consult
 > a qualified financial advisor before making investment decisions.
