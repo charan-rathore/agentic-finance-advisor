@@ -4,7 +4,7 @@ import { TrendingUp, ArrowRight, Check } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface Props {
-  onComplete: () => void
+  onComplete: () => Promise<void>
 }
 
 const INCOME_BRACKETS = [
@@ -49,6 +49,7 @@ const HORIZON_OPTIONS = [
 export default function Onboarding({ onComplete }: Props) {
   const [step, setStep] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const [data, setData] = useState({
     name: '',
     monthly_income: '',
@@ -73,9 +74,11 @@ export default function Onboarding({ onComplete }: Props) {
 
   const handleNext = async () => {
     if (step < totalSteps - 1) {
+      setError('')
       setStep(step + 1)
     } else {
       setSaving(true)
+      setError('')
       try {
         await api.createProfile({
           name: data.name.trim(),
@@ -86,9 +89,10 @@ export default function Onboarding({ onComplete }: Props) {
           primary_goal: data.primary_goal,
           horizon_pref: data.horizon_pref,
         })
-        onComplete()
+        await onComplete()
       } catch (err) {
         console.error('Failed to save profile:', err)
+        setError('Could not connect to the backend. Make sure the API server is running on port 8000.')
       } finally {
         setSaving(false)
       }
@@ -275,6 +279,13 @@ export default function Onboarding({ onComplete }: Props) {
                   <option value={30}>30%</option>
                 </select>
               </div>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="mt-5 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+              {error}
             </div>
           )}
 
